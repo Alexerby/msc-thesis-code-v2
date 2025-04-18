@@ -1,0 +1,13 @@
+{
+    "paths": {
+        "data": {
+            "soep": "~/Data/SOEP-Core/CSV/soepdata/",
+            "destatis": "~/Data/Destatis/"
+        },
+        "results": {
+            "figures": "~/Downloads/figures/",
+            "tables": "~/Downloads/tables/",
+            "dataframes": "~/Downloads/dataframes/"
+        }
+    }
+}
