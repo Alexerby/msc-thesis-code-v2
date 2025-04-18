@@ -53,8 +53,9 @@ class BafoegCalculator:
     def _merge_income(self, df):
         income = self.datasets["pgen"].data.copy()
         income["pglabgro"] = income["pglabgro"].where(~income["pglabgro"].isin(self.invalid_codes), np.nan)
-        income.rename(columns={"pglabgro": "gross_income_monthly"}, inplace=True)
-        return df.merge(income[["pid", "syear", "gross_income_monthly"]], on=["pid", "syear"], how="left")
+        income.rename(columns={"pglabgro": "gross_monthly_income"}, inplace=True)
+        income["gross_annual_income"] = income["gross_monthly_income"] * 12
+        return df.merge(income[["pid", "syear", "gross_annual_income"]], on=["pid", "syear"], how="left")
 
     def _filter_students(self, df):
         df = df[df["plg0012_h"] == 1]
@@ -75,7 +76,8 @@ class BafoegCalculator:
 
         df = df.merge(father_income[["fnr", "syear", "father_income"]], on=["fnr", "syear"], how="left")
         df = df.merge(mother_income[["mnr", "syear", "mother_income"]], on=["mnr", "syear"], how="left")
-        df["parental_income"] = df[["father_income", "mother_income"]].sum(axis=1, skipna=True)
+        df["parental_income"] = df[["father_income", "mother_income"]].sum(axis=1, min_count=1)
+        df["parental_annual_income"] = df["parental_income"] * 12
         return df
 
     def export(self, filename: str, format: ExportType = "csv"):
@@ -86,13 +88,6 @@ class BafoegCalculator:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    # parser = argparse.ArgumentParser(description="Estimate theoretical BAföG from SOEP data")
-    # parser.add_argument("--output", type=str, default="bafoeg_data.csv", help="Output filename")
-    # parser.add_argument("--format", type=str, choices=["csv", "excel", "parquet"], default="csv", help="Export format")
-    # args = parser.parse_args()
-
     # Instantiate and run the calculator
     calculator = BafoegCalculator()
     print("📦 Loading SOEP datasets...")
