@@ -4,10 +4,21 @@ import numpy as np
 
 # Project imports
 from misc.utility_functions import Literal, export_data
-from data_handler import SOEPDataHandler
+from data_handler import SOEPDataHandler, SOEPStatutoryInputs
 
 
 ExportType = Literal["csv", "excel"]
+
+
+#TODO: 
+# Currently not looking at income of 
+# previous year for parents or spouse.
+# BAföG § 24 (1).
+
+# TODO: 
+# Add spouse income. Make this contingent on the being in a "relationship in law". 
+# as this makes sense.
+
 
 class BafoegCalculator:
     def __init__(self):
@@ -37,14 +48,35 @@ class BafoegCalculator:
 
     def process_data(self):
         df = self.datasets["ppathl"].data.copy()
+        df = df[df["syear"] >= 2002] # Filter for only 2002 onwards
         df = self._add_demographics(df)
         df = self._merge_education(df)
         df = self._merge_income(df)
         df = self._filter_students(df)
         df = self._merge_parental_links(df)
         df = self._merge_parental_incomes(df)
-
+        df = self._apply_lump_sum_tax_deduction(df)
         self.df = df
+
+    def _apply_lump_sum_tax_deduction(self, df):
+        """
+        Merges in the year-specific Werbungskostenpauschale and 
+        applies it to parental income.
+        """
+        # Load the statutory deduction table
+        statutory_input = SOEPStatutoryInputs("Werbungskostenpauschale")
+        statutory_input.load_dataset(columns=["Year", "werbungskostenpauschale"])
+
+        # Rename for clarity before merge
+        deduction_df = statutory_input.data.rename(columns={"Year": "syear"}) 
+
+        # Merge the deduction into the main dataframe
+        df = df.merge(deduction_df, on="syear", how="left")
+
+        # You can now use df["werbungskostenpauschale"] wherever needed, e.g.:
+        df["adjusted_parental_income"] = df["parental_annual_income"] - df["werbungskostenpauschale"]
+
+        return df
 
     def _merge_education(self, df):
         edu = self.datasets["pl"].data

@@ -2,7 +2,8 @@
     "paths": {
         "data": {
             "soep": "~/Data/SOEP-Core/CSV/soepdata/",
-            "destatis": "~/Data/Destatis/"
+            "destatis": "~/Data/Destatis/",
+            "self_composed": "~/Data/Self Composed"
         },
         "results": {
             "figures": "~/Downloads/figures/",

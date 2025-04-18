@@ -1,57 +1,45 @@
-from typing import List, Union, Dict, cast
+from typing import List, Union, Dict, Tuple, cast
 from pathlib import Path
 
 import pandas as pd
 
-
-
 from misc.utility_functions import get_config_path, load_config
 
 
-class SOEPDataHandler:
+def resolve_dataset_path(
+    file: Union[str, Path],
+    config_section: str
+) -> Tuple[Path, Path]:
     """
-    Class represents an individual dataset/file from SOEP-Core. 
-    For instance pass in dataset "pl". Will refer to pl.csv
+    Resolves the full file path for a dataset given its name and config section.
     """
-    def __init__(self, file: Union[str, Path]):
-        """
-        Initialize with a file where SOEP files are stored.
+    config_path = get_config_path(Path("config.json"))
+    config: Dict = load_config(config_path)
 
-        :file: The dataset/file to be represented by the class.
-        """
-        # Load config file
-        config_path: Path = get_config_path(Path("config.json"))
-        config: Dict = load_config(config_path)
+    data_dir = Path(config["paths"]["data"][config_section]).expanduser().resolve()
 
-        # Get the data directory from the config file
-        self.data_dir = Path(config["paths"]["data"]["soep"]).expanduser().resolve()
+    if not data_dir.exists():
+        raise FileNotFoundError(f"Data directory not found: {data_dir}")
 
-        if not self.data_dir.exists():
-            raise FileNotFoundError(f"SOEP data directory not found: {self.data_dir}")
+    file = Path(file).with_suffix(".csv")
+    file_path = data_dir / file
 
-        # Store the file path given during initialization
+    if not file_path.exists():
+        raise FileNotFoundError(f"Dataset file not found: {file_path}")
+
+    return data_dir, file_path
+
+
+
+class DatasetLoader:
+    def __init__(self, file: Union[str, Path], config_section: str) -> None:
+        self.data_dir, self.file_path = resolve_dataset_path(file, config_section)
         self.file = Path(file).with_suffix(".csv")
-        self.file_path = self.data_dir / self.file
-
-        if not self.file_path.exists():
-            raise FileNotFoundError(f"Dataset file not found: {self.file_path}")
-
-        # Placeholder for the loaded data
         self.data: pd.DataFrame = pd.DataFrame()
 
     @property
     def dataset_name(self) -> str:
         return self.file.stem
-
-    def load_file(self) -> None:
-        """
-        Load a dataset file from the SOEP data directory.
-        """
-        file_path = self.data_dir / self.file
-        if not file_path.exists():
-            raise FileNotFoundError(f"Data file not found: {file_path}")
-        self.data = pd.read_csv(file_path)
-
 
     def load_dataset(self, columns, chunk_size: int = 10000, filetype: str = "csv"):
         """
@@ -77,7 +65,41 @@ class SOEPDataHandler:
         """Load the first n rows of a dataset file."""
         self.data = pd.read_csv(file_path, nrows=n, usecols=columns) #type: ignore
 
+    def filter_data(self, variables: Union[str, List[str]], filter_values: List):
+        """
+        Filters out rows where the specified variable(s) contain values in `filter_values`.
+        
+        Parameters:
+            variables (str or list of str): Column name(s) to filter.
+            filter_values (list): Values to exclude from the dataframe.
+        """
+        self.data = cast(pd.DataFrame, self.data)  
 
+        if isinstance(variables, str):
+            variables = [variables]
+
+        for var in variables:
+            if var not in self.data.columns:
+                raise ValueError(f"Column '{var}' not found in data.")
+            before = len(self.data)
+            self.data = self.data.loc[~self.data[var].isin(filter_values)].copy()
+            after = len(self.data)
+            print(f"Filtered '{var}': {before - after} rows removed, {after} remaining.")
+
+
+class SOEPStatutoryInputs(DatasetLoader):
+    def __init__(self, file: Union[str, Path]):
+        super().__init__(file, config_section="self_composed")
+
+
+class SOEPDataHandler(DatasetLoader):
+    """
+    Class represents an individual dataset/file from SOEP-Core. 
+    For instance pass in dataset "pl". Will refer to pl.csv
+    """
+
+    def __init__(self, file: Union[str, Path]):
+        super().__init__(file, config_section="soep")
 
     def _apply_mappings(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -105,25 +127,3 @@ class SOEPDataHandler:
         
         return df
 
-
-
-    def filter_data(self, variables: Union[str, List[str]], filter_values: List):
-        """
-        Filters out rows where the specified variable(s) contain values in `filter_values`.
-        
-        Parameters:
-            variables (str or list of str): Column name(s) to filter.
-            filter_values (list): Values to exclude from the dataframe.
-        """
-        self.data = cast(pd.DataFrame, self.data)  
-
-        if isinstance(variables, str):
-            variables = [variables]
-
-        for var in variables:
-            if var not in self.data.columns:
-                raise ValueError(f"Column '{var}' not found in data.")
-            before = len(self.data)
-            self.data = self.data.loc[~self.data[var].isin(filter_values)].copy()
-            after = len(self.data)
-            print(f"Filtered '{var}': {before - after} rows removed, {after} remaining.")
