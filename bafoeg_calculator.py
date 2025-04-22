@@ -108,15 +108,22 @@ class BafoegCalculator:
 
             income_tax = self.compute_income_tax(income, year)
 
-            # Determine church tax only if in Catholic or Protestant church
-            if income_tax is None or pd.isna(religion_code) or religion_code not in [1, 2]:
-                church_tax = 0
-            else:
-                if pd.isna(bula):
-                    church_rate = 0.09
-                else:
-                    church_rate = 0.08 if bula in [8, 9] else 0.09
+            # Determine church tax
+            if income_tax is None:
+                church_tax = None
+
+            elif religion_code in [1, 2]:
+                # Catholic or Protestant
+                church_rate = 0.08 if bula in [8, 9] else 0.09 if not pd.isna(bula) else 0.09
                 church_tax = math.floor(income_tax * church_rate)
+
+            elif religion_code in self.invalid_codes:
+                # Missing/filtered response — assume default 9%
+                church_tax = math.floor(income_tax * 0.09)
+
+            else:
+                # All others — no church tax
+                church_tax = 0
 
             return income_tax, church_tax
 
