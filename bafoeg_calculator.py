@@ -65,7 +65,7 @@ class BafoegCalculator:
         df = self._merge_income(df)
         df = self._filter_students(df)
         df = self._merge_parental_links(df)
-        df = self._merge_parental_incomes(df)
+        df = self._merge_parental_incomes(df, require_both_parents=True)
         df = self._apply_lump_sum_tax_deduction(df)
         df = self._apply_allowances_for_social_insurance_payments(df)
         df = self.calculate_income_tax(df)
@@ -228,7 +228,7 @@ class BafoegCalculator:
         parent_links = self.datasets["bioparen"].data
         return df.merge(parent_links, on="pid", how="left")
 
-    def _merge_parental_incomes(self, df):
+    def _merge_parental_incomes(self, df, require_both_parents=False):
         pgen = self.datasets["pgen"].data.copy()
         pgen["pglabgro"] = pgen["pglabgro"].where(~pgen["pglabgro"].isin(self.invalid_codes), np.nan)
         pgen.rename(columns={"pglabgro": "parent_income"}, inplace=True)
@@ -238,8 +238,16 @@ class BafoegCalculator:
 
         df = df.merge(father_income[["fnr", "syear", "father_income"]], on=["fnr", "syear"], how="left")
         df = df.merge(mother_income[["mnr", "syear", "mother_income"]], on=["mnr", "syear"], how="left")
+
+        if require_both_parents:
+            df = df[df["father_income"].notna() & df["mother_income"].notna()]
+        else:
+            # Keep rows with at least one parent
+            df = df[df[["father_income", "mother_income"]].notna().any(axis=1)]
+
         df["parental_income"] = df[["father_income", "mother_income"]].sum(axis=1, min_count=1)
         df["parental_annual_income"] = df["parental_income"] * 12
+
         return df
 
     def export(self, filename: str, format: ExportType = "csv"):
