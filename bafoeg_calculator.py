@@ -37,11 +37,11 @@ class BafoegCalculator:
         self.datasets[key].load_dataset(columns)
 
     def _add_demographics(self, df):
-        ppathl = self.datasets["ppathl"].data[["pid", "syear", "gebjahr", "gebmonat", "sex"]].copy()
+        ppathl = self.datasets["ppathl"].data[["pid", "syear", "gebjahr", "gebmonat"]].copy()
         ppathl["age"] = ppathl["syear"] - ppathl["gebjahr"]
         ppathl["age"] = ppathl["age"] - (ppathl["gebmonat"] > 6).astype(int)
 
-        df = df.merge(ppathl[["pid", "syear", "age", "sex"]], on=["pid", "syear"], how="left")
+        df = df.merge(ppathl[["pid", "syear", "age"]], on=["pid", "syear"], how="left")
 
         return df
 
@@ -62,6 +62,17 @@ class BafoegCalculator:
         """
         Merges in the year-specific Werbungskostenpauschale and 
         applies it to parental income.
+
+        PAUSCHBETRÄGE FUR WERBUNGSKOSTEN
+
+        Legal Basis	                    BGBl. Citation
+        -------------------------------------------------------
+        Conversion to Euro	            BGBl. I 2000, p. 1790
+        Alterseinkünftegesetz	        BGBl. I 2004, p. 1427
+        Steuervereinfachungsgesetz 2011	BGBl. I 2011, p. 2131
+        Steuerentlastungsgesetz 2022	BGBl. I 2022, p. 749
+        Inflationsausgleichsgesetz 2022	BGBl. I 2022, p. 2294
+        -------------------------------------------------------
         """
         # Load the statutory deduction table
         statutory_input = SOEPStatutoryInputs("Werbungskostenpauschale")
