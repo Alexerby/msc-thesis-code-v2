@@ -1,6 +1,9 @@
+# Built-in packages
+import math
 
 # Package imports
 import numpy as np
+import pandas as pd
 
 # Project imports
 from misc.utility_functions import Literal, export_data
@@ -20,35 +23,43 @@ ExportType = Literal["csv", "excel"]
 # as this makes sense.
 
 
+
+
 class BafoegCalculator:
     def __init__(self):
         self.invalid_codes = set([-1, -2, -3, -4, -5, -6, -7, -8])
         self.datasets = {}
         self.df = None
+        self._load_income_tax_sheet()
+
+
+    def _load_income_tax_sheet(self):
+        # Load tax table
+        tax_brackets_data = SOEPStatutoryInputs("Income Tax")
+        tax_brackets_data.load_dataset(columns=lambda col: True)
+        
+        # Clean and convert: Replace commas, then coerce to numeric
+        raw_df = tax_brackets_data.data
+        cleaned_df = raw_df.apply(lambda col: col.astype(str).str.replace(",", "."))  # fix decimal commas
+        numeric_df = cleaned_df.apply(pd.to_numeric, errors="coerce")  # convert strings to numbers
+
+        # Save cleaned version
+        self.tax_rate_df = numeric_df
+
+        # Optional: warn if any values are still NaN
+        if self.tax_rate_df.isna().any().any():
+            raise ValueError("🚨 Tax rate table contains NaNs — check formatting.")
 
     def load_all_data(self):
-        self._load_dataset("ppathl", ["pid", "syear", "gebjahr", "sex", "gebmonat", "parid", "partner"])
+        self._load_dataset("ppathl", ["pid", "hid", "syear", "gebjahr", "sex", "gebmonat", "parid", "partner"])
         self._load_dataset("pl", ["pid", "syear", "plg0012_h"])
         self._load_dataset("pgen", ["pid", "syear", "pglabgro"])
         self._load_dataset("bioparen", ["pid", "fnr", "mnr"])
-
-    def _load_dataset(self, key, columns):
-        self.datasets[key] = SOEPDataHandler(key)
-        self.datasets[key].load_dataset(columns)
-
-    def _add_demographics(self, df):
-        ppathl = self.datasets["ppathl"].data[["pid", "syear", "gebjahr", "gebmonat"]].copy()
-        ppathl["age"] = ppathl["syear"] - ppathl["gebjahr"]
-        ppathl["age"] = ppathl["age"] - (ppathl["gebmonat"] > 6).astype(int)
-
-        df = df.merge(ppathl[["pid", "syear", "age"]], on=["pid", "syear"], how="left")
-
-        return df
-
+        self._load_dataset("regionl", ["hid", "bula", "syear"])
 
     def process_data(self):
         df = self.datasets["ppathl"].data.copy()
-        df = df[df["syear"] >= 2002] # Filter for only 2002 onwards
+        df = df[df["syear"] >= 2002] # Filter for only 2002 onwards (post Euro implementation)
         df = self._add_demographics(df)
         df = self._merge_education(df)
         df = self._merge_income(df)
@@ -56,7 +67,118 @@ class BafoegCalculator:
         df = self._merge_parental_links(df)
         df = self._merge_parental_incomes(df)
         df = self._apply_lump_sum_tax_deduction(df)
+        df = self._apply_allowances_for_social_insurance_payments(df)
+        df = self.calculate_income_tax(df)
+
         self.df = df
+
+    def _load_dataset(self, key, columns):
+        self.datasets[key] = SOEPDataHandler(key)
+        self.datasets[key].load_dataset(columns)
+
+    def _add_demographics(self, df):
+        ppathl = self.datasets["ppathl"].data[["pid", "hid", "syear", "gebjahr", "gebmonat"]].copy()
+        ppathl["age"] = ppathl["syear"] - ppathl["gebjahr"]
+        ppathl["age"] = ppathl["age"] - (ppathl["gebmonat"] > 6).astype(int)
+        df = df.merge(ppathl[["pid", "syear", "age"]], on=["pid", "syear"], how="left")
+
+        # Find what state (Bundesland) the individual lives in 
+        regionl = self.datasets["regionl"].data[["hid", "syear", "bula"]].copy()
+        df = df.merge(regionl[["hid", "syear", "bula"]], on=["hid", "syear"], how="left")
+
+        return df
+
+    
+    def calculate_income_tax(self, df):
+        """
+        Adds columns for:
+        - parental_income_tax
+        - parental_church_tax
+        - parental_income_post_income_tax
+
+        Based on Einkommensteuergesetz (EStG) § 32a and regional church tax rates.
+
+        Args:
+            df (pd.DataFrame): DataFrame with 'syear', 'bula', and 'parental_income_post_insurance_allowance'
+
+        Returns:
+            pd.DataFrame: Updated with new tax-related columns
+        """
+
+        def compute_tax(row):
+            year = int(row["syear"])
+            income = row["parental_income_post_insurance_allowance"]
+
+            if pd.isna(income):
+                return None, None  # tax, church_tax
+
+            match = self.tax_rate_df[self.tax_rate_df["year"] == year]
+            if match.empty:
+                raise ValueError(f"No tax parameters found for year {year}")
+
+            params = match.iloc[0].apply(pd.to_numeric, errors="coerce")
+            income = math.floor(income)
+
+            A = params["basic_allowance"]
+            B = params["first_bracket_upper"]
+            C = params["second_bracket_upper"]
+            D = params["top_rate_threshold"]
+
+            if income <= A:  # Bracket 1
+                tax = 0
+            elif A < income <= B:  # Bracket 2
+                y = (income - A) / 10_000
+                tax = (params["bracket2_a"] * y + params["bracket2_b"]) * y
+            elif B < income <= C:  # Bracket 3
+                z = (income - B) / 10_000
+                tax = (params["bracket3_a"] * z + params["bracket3_b"]) * z + params["bracket3_c"]
+            elif C < income <= D:  # Bracket 4
+                tax = params["rate_4"] * income - params["deduct_4"]
+            else:  # Bracket 5
+                tax = params["rate_5"] * income - params["deduct_5"]
+
+            if pd.isna(tax):
+                return None, None
+
+            tax = math.floor(tax)
+
+            # Church tax rate: 8% in BW (8) and BY (9), 9% elsewhere
+            state_code = row.get("bula", None)
+            if pd.isna(state_code):
+                church_rate = 0.09  # default to 9% if unknown
+            else:
+                church_rate = 0.08 if state_code in [8, 9] else 0.09
+
+            church_tax = math.floor(tax * church_rate)
+
+            return tax, church_tax
+
+        # Apply compute_tax → return a DataFrame with two new columns
+        tax_result = df.apply(compute_tax, axis=1, result_type="expand")
+        df[["parental_income_tax", "parental_church_tax"]] = tax_result
+
+        df["parental_income_post_income_tax"] = (
+            df["parental_income_post_insurance_allowance"] -
+            df["parental_income_tax"] -
+            df["parental_church_tax"]
+        )
+
+        return df
+
+
+    def _apply_allowances_for_social_insurance_payments(self, df):
+        """
+        Applies the social insurance deduction to adjusted parental income.
+        BAFöG § 21, (2) 1 states that 22.3% is deducted to account for 
+        social insurance payments.
+        
+        TODO: Update rate dynamically based on statutory changes (BAFöGÄndG).
+        """
+        if "adjusted_parental_income" not in df.columns:
+            raise KeyError("Missing 'adjusted_parental_income' column. Ensure previous steps ran correctly.")
+        
+        df["parental_income_post_insurance_allowance"] = df["adjusted_parental_income"] * (1 - 0.223)
+        return df
 
     def _apply_lump_sum_tax_deduction(self, df):
         """
@@ -74,19 +196,11 @@ class BafoegCalculator:
         Inflationsausgleichsgesetz 2022	BGBl. I 2022, p. 2294
         -------------------------------------------------------
         """
-        # Load the statutory deduction table
         statutory_input = SOEPStatutoryInputs("Werbungskostenpauschale")
         statutory_input.load_dataset(columns=["Year", "werbungskostenpauschale"])
-
-        # Rename for clarity before merge
         deduction_df = statutory_input.data.rename(columns={"Year": "syear"}) 
-
-        # Merge the deduction into the main dataframe
         df = df.merge(deduction_df, on="syear", how="left")
-
-        # You can now use df["werbungskostenpauschale"] wherever needed, e.g.:
         df["adjusted_parental_income"] = df["parental_annual_income"] - df["werbungskostenpauschale"]
-
         return df
 
     def _merge_education(self, df):
@@ -131,7 +245,7 @@ class BafoegCalculator:
 
 
 if __name__ == "__main__":
-    # Instantiate and run the calculator
+
     calculator = BafoegCalculator()
     print("📦 Loading SOEP datasets...")
     calculator.load_all_data()
