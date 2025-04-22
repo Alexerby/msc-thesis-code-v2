@@ -52,7 +52,7 @@ class BafoegCalculator:
 
     def load_all_data(self):
         self._load_dataset("ppathl", ["pid", "hid", "syear", "gebjahr", "sex", "gebmonat", "parid", "partner"])
-        self._load_dataset("pl", ["pid", "syear", "plg0012_h"])
+        self._load_dataset("pl", ["pid", "syear", "plg0012_h", "plh0258_h"])
         self._load_dataset("pgen", ["pid", "syear", "pglabgro"])
         self._load_dataset("bioparen", ["pid", "fnr", "mnr"])
         self._load_dataset("regionl", ["hid", "bula", "syear"])
@@ -88,82 +88,80 @@ class BafoegCalculator:
 
         return df
 
-    
     def calculate_income_tax(self, df):
         """
-        Adds columns for:
-        - parental_income_tax
-        - parental_church_tax
-        - parental_income_post_income_tax
+        NOTE: 
+            Church tax is simulated only for individuals who 
+            self-report Catholic or Protestant affiliation. 
+            This likely underestimates true church tax 
+            incidence due to unobserved registration status.
 
-        Based on Einkommensteuergesetz (EStG) § 32a and regional church tax rates.
-
-        Args:
-            df (pd.DataFrame): DataFrame with 'syear', 'bula', and 'parental_income_post_insurance_allowance'
-
-        Returns:
-            pd.DataFrame: Updated with new tax-related columns
+            TODO: Change so that individuals who have not 
+            responded to this question are assumed to be 
+            subject to church tax.
         """
-
-        def compute_tax(row):
+        def compute_row(row):
             year = int(row["syear"])
             income = row["parental_income_post_insurance_allowance"]
+            bula = row.get("bula", None)
+            religion_code = row.get("plh0258_h", None)
 
-            if pd.isna(income):
-                return None, None  # tax, church_tax
+            income_tax = self.compute_income_tax(income, year)
 
-            match = self.tax_rate_df[self.tax_rate_df["year"] == year]
-            if match.empty:
-                raise ValueError(f"No tax parameters found for year {year}")
-
-            params = match.iloc[0].apply(pd.to_numeric, errors="coerce")
-            income = math.floor(income)
-
-            A = params["basic_allowance"]
-            B = params["first_bracket_upper"]
-            C = params["second_bracket_upper"]
-            D = params["top_rate_threshold"]
-
-            if income <= A:  # Bracket 1
-                tax = 0
-            elif A < income <= B:  # Bracket 2
-                y = (income - A) / 10_000
-                tax = (params["bracket2_a"] * y + params["bracket2_b"]) * y
-            elif B < income <= C:  # Bracket 3
-                z = (income - B) / 10_000
-                tax = (params["bracket3_a"] * z + params["bracket3_b"]) * z + params["bracket3_c"]
-            elif C < income <= D:  # Bracket 4
-                tax = params["rate_4"] * income - params["deduct_4"]
-            else:  # Bracket 5
-                tax = params["rate_5"] * income - params["deduct_5"]
-
-            if pd.isna(tax):
-                return None, None
-
-            tax = math.floor(tax)
-
-            # Church tax rate: 8% in BW (8) and BY (9), 9% elsewhere
-            state_code = row.get("bula", None)
-            if pd.isna(state_code):
-                church_rate = 0.09  # default to 9% if unknown
+            # Determine church tax only if in Catholic or Protestant church
+            if income_tax is None or pd.isna(religion_code) or religion_code not in [1, 2]:
+                church_tax = 0
             else:
-                church_rate = 0.08 if state_code in [8, 9] else 0.09
+                if pd.isna(bula):
+                    church_rate = 0.09
+                else:
+                    church_rate = 0.08 if bula in [8, 9] else 0.09
+                church_tax = math.floor(income_tax * church_rate)
 
-            church_tax = math.floor(tax * church_rate)
+            return income_tax, church_tax
 
-            return tax, church_tax
-
-        # Apply compute_tax → return a DataFrame with two new columns
-        tax_result = df.apply(compute_tax, axis=1, result_type="expand")
+        tax_result = df.apply(compute_row, axis=1, result_type="expand")
         df[["parental_income_tax", "parental_church_tax"]] = tax_result
 
         df["parental_income_post_income_tax"] = (
-            df["parental_income_post_insurance_allowance"] -
-            df["parental_income_tax"] -
-            df["parental_church_tax"]
+            df["parental_income_post_insurance_allowance"]
+            - df["parental_income_tax"]
+            - df["parental_church_tax"]
         )
 
         return df
+
+    #TODO: Add solidarity surcharge
+    def compute_income_tax(self, income, year):
+        if pd.isna(income):
+            return None
+
+        match = self.tax_rate_df[self.tax_rate_df["year"] == year]
+        if match.empty:
+            raise ValueError(f"No tax parameters found for year {year}")
+
+        params = match.iloc[0].apply(pd.to_numeric, errors="coerce")
+        income = math.floor(income)
+
+        A = params["basic_allowance"]
+        B = params["first_bracket_upper"]
+        C = params["second_bracket_upper"]
+        D = params["top_rate_threshold"]
+
+        if income <= A:
+            tax = 0
+        elif A < income <= B:
+            y = (income - A) / 10_000
+            tax = (params["bracket2_a"] * y + params["bracket2_b"]) * y
+        elif B < income <= C:
+            z = (income - B) / 10_000
+            tax = (params["bracket3_a"] * z + params["bracket3_b"]) * z + params["bracket3_c"]
+        elif C < income <= D:
+            tax = params["rate_4"] * income - params["deduct_4"]
+        else:
+            tax = params["rate_5"] * income - params["deduct_5"]
+
+        return math.floor(tax) if not pd.isna(tax) else None
 
 
     def _apply_allowances_for_social_insurance_payments(self, df):
