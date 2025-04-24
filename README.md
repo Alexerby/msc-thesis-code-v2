@@ -1,3 +1,4 @@
+```mermaid
 flowchart TD
     %% ─────────────────────────────
     %%  DATA INGEST
@@ -57,3 +58,4 @@ flowchart TD
     SPLIT --> PVIEW["parents sheet"]
     SPLIT --> SVIEW["students sheet"]
     %% future siblings sheet omitted
+```
