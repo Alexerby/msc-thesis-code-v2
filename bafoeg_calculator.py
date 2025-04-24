@@ -31,7 +31,7 @@ class BafoegCalculator:
         self.datasets = {}
         self.df = None
         self._load_income_tax_sheet()
-
+        self._load_soli_thresholds()
 
     def _load_income_tax_sheet(self):
         # Load tax table
@@ -56,21 +56,85 @@ class BafoegCalculator:
         self._load_dataset("pgen", ["pid", "syear", "pglabgro"])
         self._load_dataset("bioparen", ["pid", "fnr", "mnr"])
         self._load_dataset("regionl", ["hid", "bula", "syear"])
+        self._load_dataset("hgen", ["hid", "hgtyp1hh", "syear"])
 
     def process_data(self):
+        # Starting df
         df = self.datasets["ppathl"].data.copy()
+    
+        # Add information
         df = df[df["syear"] >= 2002] # Filter for only 2002 onwards (post Euro implementation)
         df = self._add_demographics(df)
         df = self._merge_education(df)
         df = self._merge_income(df)
         df = self._filter_students(df)
         df = self._merge_parental_links(df)
-        df = self._merge_parental_incomes(df, require_both_parents=True)
+        df = self._merge_parental_incomes(df, require_both_parents=False)
         df = self._apply_lump_sum_tax_deduction(df)
         df = self._apply_allowances_for_social_insurance_payments(df)
         df = self.calculate_income_tax(df)
-
+        df = self._flag_parent_relationship(df)
+        df = self._apply_basic_allowance_parents(df)
         self.df = df
+
+    def _apply_basic_allowance_parents(self, df):
+        # Load and prep the allowance table
+        allowances = SOEPStatutoryInputs("Basic Allowances - § 25")
+        allowances.load_dataset(columns=lambda col: True)
+
+        table = allowances.data.rename(columns={
+            "Valid from": "valid_from",
+            "§ 25 (1) 1": "allowance_joint",
+            "§ 25 (1) 2": "allowance_single"
+        })
+
+        table["valid_from"] = pd.to_datetime(table["valid_from"])
+        table = table[["valid_from", "allowance_joint", "allowance_single"]].sort_values("valid_from")
+        table[["allowance_joint", "allowance_single"]] = table[["allowance_joint", "allowance_single"]].apply(pd.to_numeric, errors="coerce")
+
+        # Add a datetime version of syear to df
+        df["syear_date"] = pd.to_datetime(df["syear"].astype(str) + "-01-01")
+        df = df.sort_values("syear_date")
+
+        # Merge: for each syear, get the latest applicable allowance
+        df = pd.merge_asof(
+            df,
+            table,
+            left_on="syear_date",
+            right_on="valid_from",
+            direction="backward"
+        )
+
+        # Apply the appropriate allowance
+        df["parental_income_post_basic_allowance"] = np.maximum(
+            np.where(
+                df["parents_are_partnered"],
+                df["parental_income"] - df["allowance_joint"],
+                df["parental_income"] - (2 * df["allowance_single"])
+            ),
+            0
+        )
+
+        return df
+
+
+    def _flag_parent_relationship(self, df):
+        # Load parid (partner ID) from ppathl
+        ppathl = self.datasets["ppathl"].data[["pid", "syear", "parid"]].copy()
+
+        father_parid = ppathl.rename(columns={"pid": "fnr", "parid": "parid_of_father"})
+        df = df.merge(father_parid, on=["fnr", "syear"], how="left")
+
+        mother_parid = ppathl.rename(columns={"pid": "mnr", "parid": "parid_of_mother"})
+        df = df.merge(mother_parid, on=["mnr", "syear"], how="left")
+
+        # Relationship TRUE if father and mother are partnered with each other
+        df["parents_are_partnered"] = (df["parid_of_father"] == df["mnr"]) & (df["parid_of_mother"] == df["fnr"])
+
+        # Drop intermediate columns if you want a clean df
+        df.drop(columns=["parid_of_father", "parid_of_mother"], inplace=True)
+
+        return df
 
     def _load_dataset(self, key, columns):
         self.datasets[key] = SOEPDataHandler(key)
@@ -86,49 +150,45 @@ class BafoegCalculator:
         regionl = self.datasets["regionl"].data[["hid", "syear", "bula"]].copy()
         df = df.merge(regionl[["hid", "syear", "bula"]], on=["hid", "syear"], how="left")
 
+        # Find household type 
+        hgen = self.datasets["hgen"].data[["hid", "syear", "hgtyp1hh"]].copy()
+        df = df.merge(hgen[["hid", "syear", "hgtyp1hh"]], on=["hid", "syear"], how="left")
+
         return df
 
     def calculate_income_tax(self, df):
         """
         NOTE: 
-            Church tax is simulated only for individuals who 
-            self-report Catholic or Protestant affiliation. 
-            This likely underestimates true church tax 
-            incidence due to unobserved registration status.
-
-            TODO: Change so that individuals who have not 
-            responded to this question are assumed to be 
-            subject to church tax.
+            People that are have no registered beliefs are assumed 
+            to be paying the church tax rate in line with their state.
         """
         def compute_row(row):
             year = int(row["syear"])
             income = row["parental_income_post_insurance_allowance"]
             bula = row.get("bula", None)
             religion_code = row.get("plh0258_h", None)
+            household_type = row.get("hgtyp1hh", None)
 
-            income_tax = self.compute_income_tax(income, year)
+            income_tax = self._compute_income_tax(income, year)
 
-            # Determine church tax
+            # Church tax
             if income_tax is None:
                 church_tax = None
-
-            elif religion_code in [1, 2]:
-                # Catholic or Protestant
-                church_rate = 0.08 if bula in [8, 9] else 0.09 if not pd.isna(bula) else 0.09
-                church_tax = math.floor(income_tax * church_rate)
-
-            elif religion_code in self.invalid_codes:
-                # Missing/filtered response — assume default 9%
-                church_tax = math.floor(income_tax * 0.09)
-
+                soli = None
             else:
-                # All others — no church tax
-                church_tax = 0
+                if religion_code in {1, 2} | self.invalid_codes:
+                    church_rate = 0.08 if bula in [8, 9] else 0.09
+                    church_tax = math.floor(income_tax * church_rate)
+                else:
+                    church_tax = 0
 
-            return income_tax, church_tax
+                # Solidarity surcharge
+                soli = self._compute_solidarity_surcharge(income_tax, household_type, year)
+
+            return income_tax, church_tax, soli
 
         tax_result = df.apply(compute_row, axis=1, result_type="expand")
-        df[["parental_income_tax", "parental_church_tax"]] = tax_result
+        df[["parental_income_tax", "parental_church_tax", "parental_soli"]] = tax_result
 
         df["parental_income_post_income_tax"] = (
             df["parental_income_post_insurance_allowance"]
@@ -138,8 +198,43 @@ class BafoegCalculator:
 
         return df
 
-    #TODO: Add solidarity surcharge
-    def compute_income_tax(self, income, year):
+    def _load_soli_thresholds(self):
+        soli = SOEPStatutoryInputs("Solidaritätszuschlag")
+        soli.load_dataset(columns=lambda col: True)
+        df = soli.data.rename(columns={
+            "In force": "year",
+            "§ 32a Abs. 5 & 6 (joint)": "threshold_joint",
+            "Otherwise (single)": "threshold_single"
+        })
+        df[["year", "threshold_joint", "threshold_single"]] = df[["year", "threshold_joint", "threshold_single"]].apply(pd.to_numeric, errors="coerce")
+        self.soli_thresholds = df.set_index("year")
+
+    def _compute_solidarity_surcharge(self, income_tax, household_type, year):
+        """
+        TODO: 
+            Double check this. Think it's not considering the taxes 
+            of the mother/father respectively when finding the threshold, it's is 
+            just looking at them as one unit.
+        """
+        if pd.isna(income_tax):
+            return None
+
+        joint_filing = household_type in {2, 4, 5, 6}
+
+        try:
+            thresholds = self.soli_thresholds.loc[year]
+        except KeyError:
+            # Use nearest past year if no exact match
+            past_years = self.soli_thresholds.index[self.soli_thresholds.index <= year]
+            if past_years.empty:
+                return math.floor(income_tax * 0.055)  # fallback for pre-2020
+            thresholds = self.soli_thresholds.loc[past_years.max()]
+
+        threshold = thresholds["threshold_joint"] if joint_filing else thresholds["threshold_single"]
+
+        return 0 if income_tax <= threshold else math.floor(income_tax * 0.055)
+
+    def _compute_income_tax(self, income, year):
         if pd.isna(income):
             return None
 
@@ -169,7 +264,6 @@ class BafoegCalculator:
             tax = params["rate_5"] * income - params["deduct_5"]
 
         return math.floor(tax) if not pd.isna(tax) else None
-
 
     def _apply_allowances_for_social_insurance_payments(self, df):
         """
@@ -228,7 +322,7 @@ class BafoegCalculator:
         parent_links = self.datasets["bioparen"].data
         return df.merge(parent_links, on="pid", how="left")
 
-    def _merge_parental_incomes(self, df, require_both_parents=False):
+    def _merge_parental_incomes(self, df, require_both_parents=True):
         pgen = self.datasets["pgen"].data.copy()
         pgen["pglabgro"] = pgen["pglabgro"].where(~pgen["pglabgro"].isin(self.invalid_codes), np.nan)
         pgen.rename(columns={"pglabgro": "parent_income"}, inplace=True)
@@ -254,7 +348,6 @@ class BafoegCalculator:
         if self.df is None:
             raise ValueError("Data has not been processed yet.")
         export_data(format, df=self.df, output_filename=filename)
-
 
 
 if __name__ == "__main__":
