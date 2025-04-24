@@ -175,3 +175,6 @@ cython_debug/
 
 # Ignore tex files
 .*tex
+
+# Ignore my own md file
+new_feature.md
