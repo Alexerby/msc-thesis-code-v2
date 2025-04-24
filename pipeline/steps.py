@@ -167,3 +167,96 @@ def apply_basic_allowance_parents(df: pd.DataFrame, allowance_table: pd.DataFram
         0,
     )
     return out.drop(columns=["valid_from", "syear_date", "allowance_joint", "allowance_single"])
+
+
+# ---------------------------------------------------------------------------
+# Siblings
+# ---------------------------------------------------------------------------
+
+def find_siblings(
+    df: pd.DataFrame,
+    bioparen_df: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Attach a list of sibling pids to each student row.
+    Full siblings = same biological mother *and* father.
+    """
+    # bioparen: pid, fnr, mnr
+    sib_map = (
+        bioparen_df
+        .dropna(subset=["fnr", "mnr"])
+        .groupby(["fnr", "mnr"])["pid"]
+        .apply(list)          # -> list of kids per parent pair
+        .rename("sib_list")
+        .reset_index()
+    )
+
+    out = df.merge(sib_map, on=["fnr", "mnr"], how="left")
+    # drop own pid from the list
+    out["sib_list"] = out.apply(
+        lambda r: [s for s in (r.sib_list or []) if s != r.pid],
+        axis=1,
+    )
+    return out
+
+
+def merge_sibling_income(
+    df: pd.DataFrame,
+    pgen_df: pd.DataFrame,
+    invalid_codes: Sequence[int]
+) -> pd.DataFrame:
+    """
+    Add two columns:
+      * num_siblings – number of siblings per student
+      * siblings_income_sum – total income of those siblings
+    """
+    if "sib_list" not in df:
+        raise KeyError("run find_siblings() first")
+
+    # Pre-clean pgen
+    income = pgen_df.copy()
+    income["pglabgro"] = income["pglabgro"].where(
+        ~income["pglabgro"].isin(invalid_codes), np.nan
+    )
+    income["gross_annual_income"] = income["pglabgro"] * 12
+    income = income[["pid", "syear", "gross_annual_income"]]
+
+    # Preserve student pid
+    exploded = (
+        df[["pid", "syear", "sib_list"]].copy()
+        .assign(student_pid=lambda d: d["pid"])
+        .explode("sib_list")
+        .rename(columns={"sib_list": "sibling_pid"})
+        .dropna(subset=["sibling_pid"])
+        .astype({"sibling_pid": int})
+    )
+
+    exploded = exploded.merge(
+        income, left_on=["sibling_pid", "syear"], right_on=["pid", "syear"], how="left"
+    )
+
+    sib_agg = (
+        exploded.groupby(["student_pid", "syear"])["gross_annual_income"]
+                .agg(num_siblings="count", siblings_income_sum="sum")
+                .reset_index()
+                .rename(columns={"student_pid": "pid"})
+    )
+
+    out = df.merge(sib_agg, on=["pid", "syear"], how="left")
+    out[["num_siblings", "siblings_income_sum"]] = out[[
+        "num_siblings", "siblings_income_sum"
+    ]].fillna(0)
+
+    return out
+
+
+def apply_sibling_allowance(df: pd.DataFrame, rate: float = 2_000) -> pd.DataFrame:
+    """
+    Example: deduct €2 000 per sibling from parental income (placeholder logic!)
+    """
+    out = df.copy()
+    out["parental_income_post_sibling_allowance"] = np.maximum(
+        out["parental_income_post_basic_allowance"] - rate * out["num_siblings"],
+        0,
+    )
+    return out

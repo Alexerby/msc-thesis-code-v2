@@ -71,3 +71,38 @@ def export_data(
         df.to_csv(file_path, index=False)
     elif data_type == "excel":
         df.to_excel(file_path, index=False, sheet_name=sheet_name)
+
+
+def _next_available_path(base_filename: str, ext: str, results_key: str) -> Path:
+    """
+    Return a Path inside the configured results directory that doesn't overwrite
+    an existing file by appending ' (1)', ' (2)', ... if needed.
+    """
+    config_path = get_config_path(Path("config.json"))
+    config = load_config(config_path)
+    folder = Path(config["paths"]["results"][results_key]).expanduser().resolve()
+    folder.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{base_filename}{ext}" if not base_filename.endswith(ext) else base_filename
+    file_path = folder / filename
+    base, ext_only = os.path.splitext(filename)
+    counter = 1
+    while file_path.exists():
+        file_path = folder / f"{base} ({counter}){ext_only}"
+        counter += 1
+    return file_path
+
+def export_tables(
+        tables: dict[str, pd.DataFrame],
+        base_name: str = "bafoeg_results",
+        results_key: str = "dataframes"
+):
+    """
+    Save each DataFrame in `tables` to its own sheet in one workbook,
+    using the configured results directory and avoiding overwrite.
+    """
+    path = _next_available_path(base_name, ".xlsx", results_key)
+    with pd.ExcelWriter(path, engine="xlsxwriter") as xl:
+        for sheet, frame in tables.items():
+            frame.to_excel(xl, sheet_name=sheet[:31], index=False)  # Excel max sheet name = 31 chars
+    print(f"✅ Excel workbook written → {path}")

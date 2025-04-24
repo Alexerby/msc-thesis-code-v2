@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Minimal façade ‑ constructs the pipeline and exports the result."""
 
-from misc.utility_functions import export_data, Literal
+from misc.utility_functions import export_data, Literal, export_tables
 from loaders.registry import LoaderRegistry
 from pipeline.build import BafoegPipeline
 
@@ -30,6 +30,5 @@ class BafoegCalculator:
 
 if __name__ == "__main__":
     calc = BafoegCalculator()
-    calc.run()
-    calc.export("bafoeg_results.xlsx")
-    print("✅ Sheets written:", ", ".join(calc.tables))
+    tables = calc.run()          # returns the dict
+    export_tables(tables, base_name="bafoeg_results")
