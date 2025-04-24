@@ -10,7 +10,7 @@ flowchart TD
         BIOPAREN["bioparen.csv"]
         REGIONL["regionl.csv"]
         HGEN["hgen.csv"]
-        STAT["§-tables (Income Tax, Soli, § 25, Werbung)"]
+        STAT["§-tables (Income Tax, Soli, §25, Werbung)"]
     end
 
     %% Loader layer
@@ -27,35 +27,36 @@ flowchart TD
     %% ─────────────────────────────
     LR --> PIPE["BafoegPipeline"]
 
-    subgraph "pipeline.steps"
+    subgraph steps["pipeline.steps"]
         FILTER["filter_post_euro"]
         DEMO["add_demographics"]
         EDU["merge_education"]
         INC["merge_income"]
-        STUD["filter_students"]
+        STFILT["filter_students"]
         PARENTS["merge_parent_links + incomes"]
         WERB["apply_lump_sum_deduction"]
         SOCL["apply_social_insurance_allowance"]
         FLAG["flag_parent_relationship"]
-        §25["apply_basic_allowance_parents"]
+        ALLOW["apply_basic_allowance_parents"]
     end
 
     PIPE --> FILTER
-    FILTER --> DEMO --> EDU --> INC --> STUD --> PARENTS --> WERB --> SOCL
+    FILTER --> DEMO --> EDU --> INC --> STFILT --> PARENTS --> WERB --> SOCL
 
     %% Tax service
-    SOCL --> TAX["TaxService.compute_for_row()"]
-    TAX --> FLAG --> §25
-    §25 --> SPLIT["split_into_views()"]
+    SOCL --> TAX["TaxService.compute_for_row"]
+    TAX --> FLAG --> ALLOW
+    ALLOW --> SPLIT["split_into_views"]
 
     %% ─────────────────────────────
     %%  OUTPUT
     %% ─────────────────────────────
-    SPLIT --> XW["pd.ExcelWriter → bafoeg_results.xlsx"]
-    SPLIT --> MAIN["df_full (debug)"]
+    SPLIT --> XW["Excel writer (bafoeg_results.xlsx)"]
+    SPLIT --> FULL["df_full (debug)"]
 
-    %% Views inside Excel
+    %% Worksheet views
     SPLIT --> PVIEW["parents sheet"]
     SPLIT --> SVIEW["students sheet"]
-    %% future siblings sheet omitted
+    %% future  SPLIT --> SIB["siblings sheet"]
+
 ```
