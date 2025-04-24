@@ -1,0 +1,82 @@
+import math
+import pandas as pd
+import numpy as np
+from data_handler import SOEPStatutoryInputs
+
+class TaxService:
+    def __init__(self):
+        self.tax_table   = self._load_tax_table()
+        self.soli_table  = self._load_soli_thresholds()
+        self._invalid    = {-1, -2, -3, -4, -5, -6, -7, -8}
+
+    # ---------- public API ----------
+    def compute_for_row(self, row: pd.Series) -> tuple[float | None, float | None, float | None]:
+        year  = int(row["syear"])
+        itax  = self._income_tax(row["parental_income_post_insurance_allowance"], year)
+        if itax is None:
+            return None, None, None
+
+        church = (
+            math.floor(itax * (0.08 if row.get("bula") in [8, 9] else 0.09))
+            if row.get("plh0258_h") in {1, 2} | self._invalid else 0
+        )
+        soli = self._soli(itax, row.get("hgtyp1hh"), year)
+        return itax, church, soli
+
+    # ---------- internal helpers ----------
+    def _load_tax_table(self):
+        tb = SOEPStatutoryInputs("Income Tax")
+        tb.load_dataset(columns=lambda _: True)
+        return tb.data.map(lambda v: pd.to_numeric(str(v).replace(",", "."), errors="coerce"))
+
+    def _load_soli_thresholds(self):
+        soli = SOEPStatutoryInputs("Solidaritätszuschlag")
+        soli.load_dataset(columns=lambda _: True)
+        df = soli.data.rename(columns={
+            "In force": "year",
+            "§ 32a Abs. 5 & 6 (joint)": "joint",
+            "Otherwise (single)": "single",
+        }).apply(pd.to_numeric, errors="coerce")
+        return df.set_index("year")
+
+    def _soli(self, itax: float, hh_type: int | None, year: int) -> float:
+        """Return solidarity-surcharge amount for a given income-tax value.
+
+        Fallback rules   
+        1. Use the row for *the latest year ≤ survey* that exists.  
+        2. If the table is empty (or only contains years > survey), apply
+           the flat 5.5 % rate.
+        """
+        joint = hh_type in {2, 4, 5, 6}
+        col   = "joint" if joint else "single"
+
+        # 1) exact hit
+        if year in self.soli_table.index:
+            thresh = self.soli_table.at[year, col]
+        else:
+            # 2) fallback to latest year before the survey year
+            older = self.soli_table[self.soli_table.index < year]
+            if older.empty:                      # nothing at all → flat rate
+                return math.floor(itax * 0.055)
+            thresh = older.iloc[-1][col]
+
+        return 0 if itax <= thresh else math.floor(itax * 0.055)
+
+    def _income_tax(self, income: float | None, year: int) -> float | None:
+        if pd.isna(income): 
+            return None
+        p = self.tax_table[self.tax_table.year == year].iloc[0]
+        A, B, C, D = p[["basic_allowance", "first_bracket_upper",
+                        "second_bracket_upper", "top_rate_threshold"]]
+        income = math.floor(income)
+        if income <= A: 
+            tax = 0
+        elif income <= B:
+            tax = ((p.bracket2_a*((income-A)/1e4)+p.bracket2_b) * ((income-A)/1e4))
+        elif income <= C:               
+            tax = ((p.bracket3_a*((income-B)/1e4)+p.bracket3_b) * ((income-B)/1e4)+p.bracket3_c)
+        elif income <= D:                               
+            tax = p.rate_4*income - p.deduct_4
+        else:                                           
+            tax = p.rate_5*income - p.deduct_5
+        return math.floor(tax)
