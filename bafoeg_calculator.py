@@ -29,7 +29,7 @@ class BafoegCalculator:
     def __init__(self):
         self.invalid_codes = set([-1, -2, -3, -4, -5, -6, -7, -8])
         self.datasets = {}
-        self.df = None
+        self.main_df = None
         self._load_income_tax_sheet()
         self._load_soli_thresholds()
 
@@ -75,7 +75,24 @@ class BafoegCalculator:
         df = self.calculate_income_tax(df)
         df = self._flag_parent_relationship(df)
         df = self._apply_basic_allowance_parents(df)
-        self.df = df
+        # df = self._get_siblings(df)
+        self.main_df = df
+
+    # def _get_siblings(self, df):
+    #     # TODO: Create new dataframe for siblings, get income etcetera bla bla bla
+    #     bioparen = self.datasets["bioparen"].data[["pid", "fnr", "mnr"]]
+    #
+    #     # Rename for clarity
+    #     siblings = bioparen.rename(columns={"pid": "sibling_pid"})
+    #
+    #     # Match siblings: same parents (full siblings only)
+    #     df = df.merge(siblings, on=["fnr", "mnr"], how="inner")
+    #
+    #     # Exclude self
+    #     df = df[df["pid"] != df["sibling_pid"]]
+    #
+    #     return df
+
 
     def _apply_basic_allowance_parents(self, df):
         # Load and prep the allowance table
@@ -115,8 +132,10 @@ class BafoegCalculator:
             0
         )
 
-        return df
+        # Clean up temporary columns
+        df.drop(columns=["valid_from", "syear_date", "allowance_joint", "allowance_single"], inplace=True)
 
+        return df
 
     def _flag_parent_relationship(self, df):
         # Load parid (partner ID) from ppathl
@@ -141,9 +160,12 @@ class BafoegCalculator:
         self.datasets[key].load_dataset(columns)
 
     def _add_demographics(self, df):
+
+        # Calculate age and merge into df
         ppathl = self.datasets["ppathl"].data[["pid", "hid", "syear", "gebjahr", "gebmonat"]].copy()
         ppathl["age"] = ppathl["syear"] - ppathl["gebjahr"]
         ppathl["age"] = ppathl["age"] - (ppathl["gebmonat"] > 6).astype(int)
+        df.drop(columns=["gebjahr", "gebmonat"], inplace=True)
         df = df.merge(ppathl[["pid", "syear", "age"]], on=["pid", "syear"], how="left")
 
         # Find what state (Bundesland) the individual lives in 
@@ -195,6 +217,8 @@ class BafoegCalculator:
             - df["parental_income_tax"]
             - df["parental_church_tax"]
         )
+
+        df.drop(columns=["plh0258_h"], inplace=True)
 
         return df
 
@@ -300,6 +324,7 @@ class BafoegCalculator:
         deduction_df = statutory_input.data.rename(columns={"Year": "syear"}) 
         df = df.merge(deduction_df, on="syear", how="left")
         df["adjusted_parental_income"] = df["parental_annual_income"] - df["werbungskostenpauschale"]
+        df.drop(columns=["werbungskostenpauschale"], inplace=True)
         return df
 
     def _merge_education(self, df):
@@ -314,9 +339,7 @@ class BafoegCalculator:
         return df.merge(income[["pid", "syear", "gross_annual_income"]], on=["pid", "syear"], how="left")
 
     def _filter_students(self, df):
-        df = df[df["plg0012_h"] == 1]
-        df.rename(columns={"plg0012_h": "currently_in_education"}, inplace=True)
-        return df
+        return df[df["plg0012_h"] == 1].drop(columns=["plg0012_h"])
 
     def _merge_parental_links(self, df):
         parent_links = self.datasets["bioparen"].data
@@ -344,22 +367,18 @@ class BafoegCalculator:
 
         return df
 
-    def export(self, filename: str, format: ExportType = "csv"):
-        if self.df is None:
-            raise ValueError("Data has not been processed yet.")
-        export_data(format, df=self.df, output_filename=filename)
-
 
 if __name__ == "__main__":
 
     calculator = BafoegCalculator()
-    print("📦 Loading SOEP datasets...")
+    print("\n📦 Loading SOEP datasets...")
     calculator.load_all_data()
 
-    print("🔧 Processing and merging data...")
+    print("\nProcessing and merging data...")
     calculator.process_data()
 
-    print(f"💾 Exporting")
-    calculator.export(filename="student_parental_income.csv", format="csv")
+    if calculator.main_df is not None:
+        print(f"Exporting")
+        export_data("excel", calculator.main_df, "student_parental_income", sheet_name="main_df")
+        print("✅ Done.")
 
-    print("✅ Done.")

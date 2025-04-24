@@ -28,8 +28,20 @@ def load_config(config_path: Path) -> Dict:
         config = json.load(f)
         return config
 
-def export_data(data_type: Literal["csv", "excel"], df: pd.DataFrame, output_filename: str):
-    """Exports data to the results directory without overwriting existing files."""
+def export_data(
+    data_type: Literal["csv", "excel"],
+    df: pd.DataFrame,
+    output_filename: str,
+    sheet_name: str = "Sheet1"
+):
+    """Exports data to the results directory without overwriting existing files.
+    
+    Args:
+        data_type (str): "csv" or "excel"
+        df (pd.DataFrame): The DataFrame to export
+        output_filename (str): Base name for the output file (no extension needed)
+        sheet_name (str): Optional sheet name for Excel exports
+    """
 
     if df is None:
         raise ValueError("Dataframe is empty")
@@ -38,25 +50,24 @@ def export_data(data_type: Literal["csv", "excel"], df: pd.DataFrame, output_fil
     config = load_config(config_path)
     results_folder = Path(config["paths"]["results"]["dataframes"])
 
-    # Create the directory if it doesn't exist
+    # Ensure output directory exists
     results_folder = results_folder.expanduser().resolve()
     results_folder.mkdir(parents=True, exist_ok=True)
 
-    # Generate the file path with potential incrementing
+    # Append correct extension
+    ext = ".csv" if data_type == "csv" else ".xlsx"
+    output_filename = f"{output_filename}{ext}" if not output_filename.endswith(ext) else output_filename
+
+    # Avoid overwrite
     file_path = results_folder / output_filename
-    
-    # Check if the file exists, and if it does, increment the filename
     file_base, file_extension = os.path.splitext(output_filename)
     counter = 1
     while file_path.exists():
         file_path = results_folder / f"{file_base} ({counter}){file_extension}"
         counter += 1
 
-    # Export the data
+    # Export
     if data_type == "csv":
         df.to_csv(file_path, index=False)
     elif data_type == "excel":
-        df.to_excel(file_path, index=False)
-
-    print(f"Data exported to: {file_path}")
-    print(f"Columns after mapping: {df.columns}")
+        df.to_excel(file_path, index=False, sheet_name=sheet_name)
