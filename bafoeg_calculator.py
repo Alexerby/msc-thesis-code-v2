@@ -7,7 +7,8 @@ import pandas as pd
 
 # Project imports
 from misc.utility_functions import Literal, export_data
-from data_handler import SOEPDataHandler, SOEPStatutoryInputs
+from data_handler import SOEPStatutoryInputs
+from loaders.registry import LoaderRegistry
 
 
 ExportType = Literal["csv", "excel"]
@@ -26,9 +27,9 @@ ExportType = Literal["csv", "excel"]
 
 
 class BafoegCalculator:
-    def __init__(self):
+    def __init__(self, loaders: LoaderRegistry | None = None):
         self.invalid_codes = set([-1, -2, -3, -4, -5, -6, -7, -8])
-        self.datasets = {}
+        self.loaders = loaders or LoaderRegistry()
         self.main_df = None
         self._load_income_tax_sheet()
         self._load_soli_thresholds()
@@ -51,16 +52,12 @@ class BafoegCalculator:
             raise ValueError("🚨 Tax rate table contains NaNs — check formatting.")
 
     def load_all_data(self):
-        self._load_dataset("ppathl", ["pid", "hid", "syear", "gebjahr", "sex", "gebmonat", "parid", "partner"])
-        self._load_dataset("pl", ["pid", "syear", "plg0012_h", "plh0258_h"])
-        self._load_dataset("pgen", ["pid", "syear", "pglabgro"])
-        self._load_dataset("bioparen", ["pid", "fnr", "mnr"])
-        self._load_dataset("regionl", ["hid", "bula", "syear"])
-        self._load_dataset("hgen", ["hid", "hgtyp1hh", "syear"])
+        self.loaders.load_all()
 
     def process_data(self):
         # Starting df
-        df = self.datasets["ppathl"].data.copy()
+        df = self.loaders.ppath().copy()
+        df = self.loaders.ppath().copy()
     
         # Add information
         df = df[df["syear"] >= 2002] # Filter for only 2002 onwards (post Euro implementation)
@@ -77,22 +74,6 @@ class BafoegCalculator:
         df = self._apply_basic_allowance_parents(df)
         # df = self._get_siblings(df)
         self.main_df = df
-
-    # def _get_siblings(self, df):
-    #     # TODO: Create new dataframe for siblings, get income etcetera bla bla bla
-    #     bioparen = self.datasets["bioparen"].data[["pid", "fnr", "mnr"]]
-    #
-    #     # Rename for clarity
-    #     siblings = bioparen.rename(columns={"pid": "sibling_pid"})
-    #
-    #     # Match siblings: same parents (full siblings only)
-    #     df = df.merge(siblings, on=["fnr", "mnr"], how="inner")
-    #
-    #     # Exclude self
-    #     df = df[df["pid"] != df["sibling_pid"]]
-    #
-    #     return df
-
 
     def _apply_basic_allowance_parents(self, df):
         # Load and prep the allowance table
@@ -139,7 +120,7 @@ class BafoegCalculator:
 
     def _flag_parent_relationship(self, df):
         # Load parid (partner ID) from ppathl
-        ppathl = self.datasets["ppathl"].data[["pid", "syear", "parid"]].copy()
+        ppathl = self.loaders.ppath().copy()
 
         father_parid = ppathl.rename(columns={"pid": "fnr", "parid": "parid_of_father"})
         df = df.merge(father_parid, on=["fnr", "syear"], how="left")
@@ -155,25 +136,20 @@ class BafoegCalculator:
 
         return df
 
-    def _load_dataset(self, key, columns):
-        self.datasets[key] = SOEPDataHandler(key)
-        self.datasets[key].load_dataset(columns)
-
     def _add_demographics(self, df):
-
         # Calculate age and merge into df
-        ppathl = self.datasets["ppathl"].data[["pid", "hid", "syear", "gebjahr", "gebmonat"]].copy()
+        ppathl = self.loaders.ppath().copy()[["pid", "hid", "syear", "gebjahr", "gebmonat"]]
         ppathl["age"] = ppathl["syear"] - ppathl["gebjahr"]
         ppathl["age"] = ppathl["age"] - (ppathl["gebmonat"] > 6).astype(int)
         df.drop(columns=["gebjahr", "gebmonat"], inplace=True)
         df = df.merge(ppathl[["pid", "syear", "age"]], on=["pid", "syear"], how="left")
 
         # Find what state (Bundesland) the individual lives in 
-        regionl = self.datasets["regionl"].data[["hid", "syear", "bula"]].copy()
+        regionl = self.loaders.region()[["hid", "syear", "bula"]].copy()
         df = df.merge(regionl[["hid", "syear", "bula"]], on=["hid", "syear"], how="left")
 
         # Find household type 
-        hgen = self.datasets["hgen"].data[["hid", "syear", "hgtyp1hh"]].copy()
+        hgen = self.loaders.hgen()[["hid", "syear", "hgtyp1hh"]].copy()
         df = df.merge(hgen[["hid", "syear", "hgtyp1hh"]], on=["hid", "syear"], how="left")
 
         return df
@@ -328,11 +304,11 @@ class BafoegCalculator:
         return df
 
     def _merge_education(self, df):
-        edu = self.datasets["pl"].data
+        edu = self.loaders.pl().copy()
         return df.merge(edu, on=["pid", "syear"], how="left")
 
     def _merge_income(self, df):
-        income = self.datasets["pgen"].data.copy()
+        income = self.loaders.pgen().copy()
         income["pglabgro"] = income["pglabgro"].where(~income["pglabgro"].isin(self.invalid_codes), np.nan)
         income.rename(columns={"pglabgro": "gross_monthly_income"}, inplace=True)
         income["gross_annual_income"] = income["gross_monthly_income"] * 12
@@ -342,11 +318,11 @@ class BafoegCalculator:
         return df[df["plg0012_h"] == 1].drop(columns=["plg0012_h"])
 
     def _merge_parental_links(self, df):
-        parent_links = self.datasets["bioparen"].data
+        parent_links = self.loaders.bioparen().copy()
         return df.merge(parent_links, on="pid", how="left")
 
     def _merge_parental_incomes(self, df, require_both_parents=True):
-        pgen = self.datasets["pgen"].data.copy()
+        pgen = self.loaders.pgen().copy()
         pgen["pglabgro"] = pgen["pglabgro"].where(~pgen["pglabgro"].isin(self.invalid_codes), np.nan)
         pgen.rename(columns={"pglabgro": "parent_income"}, inplace=True)
 
@@ -370,15 +346,15 @@ class BafoegCalculator:
 
 if __name__ == "__main__":
 
-    calculator = BafoegCalculator()
+    calc = BafoegCalculator()
     print("\n📦 Loading SOEP datasets...")
-    calculator.load_all_data()
+    calc.load_all_data()
 
     print("\nProcessing and merging data...")
-    calculator.process_data()
+    calc.process_data()
 
-    if calculator.main_df is not None:
+    if calc.main_df is not None:
         print(f"Exporting")
-        export_data("excel", calculator.main_df, "student_parental_income", sheet_name="main_df")
+        export_data("excel", calc.main_df, "student_parental_income", sheet_name="main_df")
         print("✅ Done.")
 
