@@ -21,34 +21,63 @@ class BafoegPipeline:
     # ------------------------------------------------------------------
     # public
     # ------------------------------------------------------------------
-    def build(self) -> pd.DataFrame:
-        df = (
+    def build(self) -> dict[str, pd.DataFrame]:
+        # 1) run the pipeline exactly as before
+        df_full = (
             self.loaders.ppath().copy()
             .pipe(S.filter_post_euro)
-            .pipe(S.add_demographics, self.loaders.ppath(), self.loaders.region(), self.loaders.hgen())
+            .pipe(S.add_demographics,
+                  self.loaders.ppath(),
+                  self.loaders.region(),
+                  self.loaders.hgen())
             .pipe(S.merge_education, self.loaders.pl())
             .pipe(S.merge_income, self.loaders.pgen(), INVALID_CODES)
             .pipe(S.filter_students)
             .pipe(S.merge_parent_links, self.loaders.bioparen())
-            .pipe(S.merge_parental_incomes, self.loaders.pgen(), INVALID_CODES, require_both_parents=False)
+            .pipe(S.merge_parental_incomes,
+                  self.loaders.pgen(),
+                  INVALID_CODES,
+                  require_both_parents=False)
             .pipe(S.apply_lump_sum_deduction, self._werbung_df)
             .pipe(S.apply_social_insurance_allowance)
         )
 
-        # row‑wise statutory taxes
-        tax_cols = df.apply(self.tax.compute_for_row, axis=1, result_type="expand")
-        df[["parental_income_tax", "parental_church_tax", "parental_soli"]] = tax_cols
-        df["parental_income_post_income_tax"] = (
-            df["parental_income_post_insurance_allowance"]
-            - df["parental_income_tax"].fillna(0)
-            - df["parental_church_tax"].fillna(0)
+        # add row-wise tax columns, flag relationship, basic allowance…
+        # (exactly the same two blocks you already have in build())
+        tax_cols = df_full.apply(self.tax.compute_for_row, axis=1, result_type="expand")
+        df_full[["parental_income_tax", "parental_church_tax", "parental_soli"]] = tax_cols
+        df_full["parental_income_post_income_tax"] = (
+            df_full["parental_income_post_insurance_allowance"]
+            - df_full["parental_income_tax"].fillna(0)
+            - df_full["parental_church_tax"].fillna(0)
         )
 
-        df = (
-            df.pipe(S.flag_parent_relationship, self.loaders.ppath())
-              .pipe(S.apply_basic_allowance_parents, self._allowance_table)
+        df_full = (
+            df_full.pipe(S.flag_parent_relationship, self.loaders.ppath())
+                   .pipe(S.apply_basic_allowance_parents, self._allowance_table)
         )
-        return df
+
+        # 2) Split into logical views
+        parents = df_full[[
+            "pid", "syear",
+            "parental_annual_income",
+            "adjusted_parental_income",
+            "parental_income_post_insurance_allowance",
+            "parental_income_tax", "parental_church_tax", "parental_soli",
+            "parental_income_post_income_tax",
+            "parental_income_post_basic_allowance"
+        ]].copy()
+
+        students = df_full[[
+            "pid", "syear", "age", "bula",
+            "gross_annual_income", "hgtyp1hh"
+        ]].copy()
+
+        return {
+            "parents":  parents,
+            "students": students,
+            "full":     df_full      # keep complete table for debugging
+        }
 
     # ------------------------------------------------------------------
     # helpers
