@@ -19,7 +19,7 @@ class BafoegCalculator:
 
     def run(self):
         self.loaders.load_all()
-        self.tables = self.pipeline.build()      # dict not df
+        self.tables = self.pipeline.build()
         return self.tables
 
     def export(self, path: str = "bafoeg.xlsx"):

@@ -22,7 +22,6 @@ class BafoegPipeline:
     # public
     # ------------------------------------------------------------------
     def build(self) -> dict[str, pd.DataFrame]:
-        # 1) run the pipeline
         df_full = (
             self.loaders.ppath().copy()
               .pipe(S.filter_post_euro)
@@ -42,25 +41,17 @@ class BafoegPipeline:
                   INVALID_CODES,
                   require_both_parents=False
               )
-              .pipe(S.apply_lump_sum_deduction, self._werbung_df)      # ← no comma
-              .pipe(S.apply_social_insurance_allowance)                # ← no comma
-              .pipe(S.find_siblings, self.loaders.bioparen())          # () added
+              .pipe(S.apply_lump_sum_deduction_parents, self._werbung_df)
+              .pipe(S.apply_social_insurance_allowance)
+              .pipe(S.find_siblings, self.loaders.bioparen())
               .pipe(S.merge_sibling_income, self.loaders.pgen(), INVALID_CODES)
-        )
-
-        # add row-wise tax columns, flag relationship, basic allowance…
-        tax_cols = df_full.apply(self.tax.compute_for_row, axis=1, result_type="expand")
-        df_full[["parental_income_tax", "parental_church_tax", "parental_soli"]] = tax_cols
-        df_full["parental_income_post_income_tax"] = (
-            df_full["parental_income_post_insurance_allowance"]
-            - df_full["parental_income_tax"].fillna(0)
-            - df_full["parental_church_tax"].fillna(0)
-        )
-
-        df_full = (
-            df_full.pipe(S.flag_parent_relationship, self.loaders.ppath())
-                   .pipe(S.apply_basic_allowance_parents, self._allowance_table)
-                   .pipe(S.apply_sibling_allowance)
+              .pipe(S.apply_income_tax, self.tax)
+              .pipe(S.flag_parent_relationship, self.loaders.ppath())
+              .pipe(S.apply_basic_allowance_parents, self._allowance_table)
+              .pipe(S.apply_sibling_allowance)
+              .pipe(S.apply_additional_allowance_parents, self._allowance_table)
+              .pipe(S.flag_living_with_parents, self.loaders.ppath())   # <-- new step 
+              .pipe(S.compute_bafög_monthly_award, self._needs_table)   # <-- your §13 CSV
         )
 
         # 2) Split into logical views
@@ -70,8 +61,10 @@ class BafoegPipeline:
             "adjusted_parental_income",
             "parental_income_post_insurance_allowance",
             "parental_income_tax", "parental_church_tax", "parental_soli",
-            "parental_income_post_income_tax",
-            "parental_income_post_basic_allowance"
+            "parental_income_relevant_for_bafög",
+            "monthly_parental_income_relevant_for_bafoeg",
+            "monthly_parental_income_post_basic_allowance", 
+            "monthly_parental_income_post_additional_allowance"
         ]].copy()
 
         students = df_full[[
@@ -101,3 +94,7 @@ class BafoegPipeline:
         allow = SOEPStatutoryInputs("Basic Allowances - § 25")
         allow.load_dataset(columns=lambda _: True)
         self._allowance_table = allow.data.copy()
+
+        needs = SOEPStatutoryInputs("Basic Allowances - § 13")
+        needs.load_dataset(columns=lambda _: True)
+        self._needs_table = needs.data.copy()
