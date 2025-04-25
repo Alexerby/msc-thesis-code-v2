@@ -50,8 +50,9 @@ class BafoegPipeline:
               .pipe(S.apply_basic_allowance_parents, self._allowance_table)
               .pipe(S.apply_sibling_allowance)
               .pipe(S.apply_additional_allowance_parents, self._allowance_table)
-              .pipe(S.flag_living_with_parents, self.loaders.ppath())   # <-- new step 
-              .pipe(S.compute_bafög_monthly_award, self._needs_table)   # <-- your §13 CSV
+              .pipe(S.flag_living_with_parents, self.loaders.ppath())
+              .pipe(S.compute_bafög_monthly_award, self._needs_table)
+              .pipe(S.add_receives_bafoeg_flag)
         )
 
         # 2) Split into logical views

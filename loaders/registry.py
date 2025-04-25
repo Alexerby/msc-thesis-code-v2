@@ -31,7 +31,7 @@ _SPEC: Dict[str, Tuple[str, List[str]]] = {
     ),
     "pl": (
         "pl",
-        ["pid", "syear", "plg0012_h", "plh0258_h"],
+        ["pid", "syear", "plg0012_h", "plh0258_h", "plc0168_h"],
     ),
     "pgen": (
         "pgen",

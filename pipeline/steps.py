@@ -387,7 +387,7 @@ def compute_bafög_monthly_award(df: pd.DataFrame, need_table: pd.DataFrame) -> 
 
     # ---- housing -----------------------------------------------------------
     out["housing_allowance"] = np.where(
-        out["lives_with_parent"],       # ← new flag
+        out["lives_with_parent"],
         out["housing_with_parents"],
         out["housing_away"],
     )
@@ -403,3 +403,12 @@ def compute_bafög_monthly_award(df: pd.DataFrame, need_table: pd.DataFrame) -> 
         "valid_from", "syear_date",
         "base_need", "housing_with_parents", "housing_away",
     ])
+
+
+def add_receives_bafoeg_flag(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Create an integer column 'receives_bafoeg' = 1 if plc0168_h > 0, else 0.
+    """
+    out = df.copy()
+    out["receives_bafoeg"] = (out["plc0168_h"] > 0).astype(int)
+    return out
