@@ -53,6 +53,21 @@ def add_demographics(
 # Education & income helpers
 # ---------------------------------------------------------------------------
 
+
+def merge_student_grant_dummy(df: pd.DataFrame, pkal_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Merge a dummy for whether the person received student grants (BAföG) in the previous year.
+
+    Returns a new column: *received_student_grant* = 1 if ISTUY > 0, else 0.
+    """
+    tmp = pkal_df[["pid", "syear", "istuy"]].copy()
+    tmp["received_student_grant"] = (tmp["istuy"] > 0).astype(int)
+    return df.merge(
+        tmp[["pid", "syear", "received_student_grant"]],
+        on=["pid", "syear"],
+        how="left",
+    )
+
 def merge_education(df: pd.DataFrame, pl_df: pd.DataFrame) -> pd.DataFrame:
     return df.merge(pl_df, on=["pid", "syear"], how="left")
 
@@ -291,7 +306,7 @@ def merge_sibling_income(
 
     return out
 
-
+# FIX: This is applying parental income. Fix.
 def apply_sibling_allowance(df: pd.DataFrame, rate: float = 2000) -> pd.DataFrame:
     out = df.copy()
     out["monthly_parental_income_post_sibling_allowance"] = np.maximum(

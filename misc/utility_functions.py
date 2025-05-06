@@ -73,6 +73,16 @@ def export_data(
         df.to_excel(file_path, index=False, sheet_name=sheet_name)
 
 
+def export_parquet(df: pd.DataFrame, base_name: str, results_key: str = "dataframes") -> Path:
+    """
+    Export a DataFrame as a .parquet file to the configured results directory,
+    avoiding overwriting by appending (1), (2), etc.
+    """
+    path = _next_available_path(base_name, ".parquet", results_key)
+    df.to_parquet(path, index=False)
+    print(f"✅ Parquet file written → {path}")
+    return path
+
 def _next_available_path(base_filename: str, ext: str, results_key: str) -> Path:
     """
     Return a Path inside the configured results directory that doesn't overwrite

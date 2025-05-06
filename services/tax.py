@@ -16,17 +16,46 @@ class TaxService:
             return None, None, None
 
         church = (
-            math.floor(itax * (0.08 if row.get("bula") in [8, 9] else 0.09))
+            math.floor(itax * (0.08 if row.get("bula") in [1, 2] else 0.09))
             if row.get("plh0258_h") in {1, 2} | self._invalid else 0
         )
         soli = self._soli(itax, row.get("hgtyp1hh"), year)
         return itax, church, soli
 
     # ---------- internal helpers ----------
-    def _load_tax_table(self):
+
+    def _load_tax_table(self) -> pd.DataFrame:
         tb = SOEPStatutoryInputs("Income Tax")
         tb.load_dataset(columns=lambda _: True)
-        return tb.data.map(lambda v: pd.to_numeric(str(v).replace(",", "."), errors="coerce"))
+
+        df = tb.data.copy()
+
+        # -- 1) normalise the *column names* -------------------------------
+        df = df.rename(columns=lambda col: (
+            col.replace("\xa0", " ")   # non‑breaking space → normal space
+               .replace("\u200b", "")  # zero‑width space → drop
+               .strip()                # trim outer whitespace
+        ))
+
+        # -- 2) convert string numbers like "9,400" → 9400.0 ---------------
+        df = df.apply(
+            lambda col: pd.to_numeric(col.str.replace(",", "."), errors="ignore")
+            if col.dtype == "object" else col
+        )
+
+        # -- 3 … 6)  your reindex / interpolate steps  ---------------------
+        df["year"] = df["year"].astype(int)
+        df = df.set_index("year").reindex(range(2002, 2026))
+        num_cols = df.select_dtypes("number").columns
+        df[num_cols] = df[num_cols].interpolate(method="linear",
+                                                limit_direction="backward")
+        df = df.reset_index()
+        return df
+
+    # def _load_tax_table(self):
+    #     tb = SOEPStatutoryInputs("Income Tax")
+    #     tb.load_dataset(columns=lambda _: True)
+    #     return tb.data.map(lambda v: pd.to_numeric(str(v).replace(",", "."), errors="coerce"))
 
     def _load_soli_thresholds(self):
         soli = SOEPStatutoryInputs("Solidaritätszuschlag")
@@ -65,17 +94,21 @@ class TaxService:
         if pd.isna(income): 
             return None
         p = self.tax_table[self.tax_table.year == year].iloc[0]
-        A, B, C, D = p[["basic_allowance", "first_bracket_upper",
-                        "second_bracket_upper", "top_rate_threshold"]]
+        A = p["basic_allowance (1) 1"]
+        B = p["first_bracket_upper (1) 2"]
+        C = p["second_bracket_upper (1) 3"]
+        D = p["top_rate_threshold (1) 4"]
         income = math.floor(income)
         if income <= A: 
             tax = 0
         elif income <= B:
-            tax = ((p.bracket2_a*((income-A)/1e4)+p.bracket2_b) * ((income-A)/1e4))
+            y = (income - A) / 1e4
+            tax = (p["bracket2_a (1) 2"] * y + p["bracket2_b (1) 2"]) * y
         elif income <= C:               
-            tax = ((p.bracket3_a*((income-B)/1e4)+p.bracket3_b) * ((income-B)/1e4)+p.bracket3_c)
+            z = (income - B) / 1e4
+            tax = (p["bracket3_a (1) 3"] * z + p["bracket3_b (1) 3"]) * z + p["bracket3_c (1) 3"]
         elif income <= D:                               
-            tax = p.rate_4*income - p.deduct_4
+            tax = p["Rate_4 (1) 4"] * income - p["Deduct_4 (1) 4"]
         else:                                           
-            tax = p.rate_5*income - p.deduct_5
+            tax = p["Rate_5 (1) 5"] * income - p["Deduct_5 (1) 5"]
         return math.floor(tax)

@@ -49,6 +49,10 @@ _SPEC: Dict[str, Tuple[str, List[str]]] = {
         "hgen",
         ["hid", "hgtyp1hh", "syear"],
     ),
+    "pequiv": (
+        "pequiv",
+        ["pid", "istuy", "syear"]
+        )
 }
 
 
@@ -110,6 +114,10 @@ class LoaderRegistry:
 
     def hgen(self):
         return self.load("hgen")
+
+    def pequiv(self):
+        return self.load("pequiv")
+
 
     # ---------------------------------------------------------------------
     # Dunder methods for convenience / debugging

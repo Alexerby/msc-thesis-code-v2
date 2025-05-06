@@ -32,6 +32,7 @@ class BafoegPipeline:
                   self.loaders.hgen()
               )
               .pipe(S.merge_education, self.loaders.pl())
+              .pipe(S.merge_student_grant_dummy, self.loaders.pequiv())
               .pipe(S.merge_income, self.loaders.pgen(), INVALID_CODES)
               .pipe(S.filter_students)
               .pipe(S.merge_parent_links, self.loaders.bioparen())
@@ -69,8 +70,12 @@ class BafoegPipeline:
         ]].copy()
 
         students = df_full[[
-            "pid", "syear", "age", "bula",
-            "gross_annual_income", "hgtyp1hh"
+            "pid", 
+            "syear", 
+            "age", 
+            "bula",
+            "gross_annual_income", 
+            "hgtyp1hh"
         ]].copy()
 
         siblings_view = df_full[[
