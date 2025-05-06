@@ -54,6 +54,22 @@ def add_demographics(
 # ---------------------------------------------------------------------------
 
 
+def merge_employment_status(df: pd.DataFrame, pgen_df: pd.DataFrame) -> pd.DataFrame:
+    """Merge employment status from pgen/pgemplst into main dataframe.
+
+    Categories:
+        1 = Full-time
+        2 = Part-time
+        3 = Vocational training
+        4 = Marginal/irregular
+        5 = Not employed
+        6–8 = Other (less relevant or rare)
+    """
+    pg = pgen_df.copy()
+    valid_codes = [1, 2, 3, 4, 5]  # Limit to most relevant categories
+    pg = pg.loc[pg["pgemplst"].isin(valid_codes)]
+    return df.merge(pg[["pid", "syear", "pgemplst"]], on=["pid", "syear"], how="left")
+
 def merge_student_grant_dummy(df: pd.DataFrame, pkal_df: pd.DataFrame) -> pd.DataFrame:
     """
     Merge a dummy for whether the person received student grants (BAföG) in the previous year.
@@ -195,6 +211,7 @@ def apply_basic_allowance_parents(df: pd.DataFrame, allowance_table: pd.DataFram
     )
 
     return out.drop(columns=["valid_from", "syear_date", "allowance_joint", "allowance_single"])
+
 
 def apply_additional_allowance_parents(df: pd.DataFrame, allowance_table: pd.DataFrame) -> pd.DataFrame:
     """

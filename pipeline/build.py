@@ -54,6 +54,7 @@ class BafoegPipeline:
               .pipe(S.flag_living_with_parents, self.loaders.ppath())
               .pipe(S.compute_bafög_monthly_award, self._needs_table)
               .pipe(S.add_receives_bafoeg_flag)
+              .pipe(S.merge_employment_status, self.loaders.pgen())
         )
 
         # 2) Split into logical views
