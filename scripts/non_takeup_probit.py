@@ -1,55 +1,57 @@
 from pathlib import Path
-
+from statsmodels.iolib.summary2 import summary_col
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
 
 from misc.utility_functions import get_config_path, load_config
-
-# Model:
-# Pr(no actual take-up∣theoretical eligibility)=Pr(A=0∣T=1)
-
-# TODO:
-# Currently covariance type non-robust
-# 
 
 ###############################################################################
 # Helpers
 ###############################################################################
 
-def _build_design_matrix(df: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame]:
-    """Build the design matrix X and dependent variable y for a Probit
-    of non‑take‑up among BAföG‑eligible students.
+def plot_non_takeup_by_year(df: pd.DataFrame) -> None:
+    # Filter for theoretically eligible students
+    eligible = df[df["receives_bafoeg"] == 1].copy()
+    eligible["NTU"] = (eligible["received_student_grant"] == 0).astype(int)
 
-    • Sample: keep all theoretically eligible students (`receives_bafoeg == 1`).
-    • y = 1 ⇔ eligible but did not receive a grant; 0 ⇔ took‑up.
-    • Continuous covariates are z‑standardised; categorical covariates are
-      one‑hot encoded with the first level dropped.
+    # Compute average NTU by year
+    rate_by_year = (
+        eligible.groupby("syear")["NTU"]
+        .mean()
+        .reset_index()
+    )
+
+    # Plot
+    plt.figure(figsize=(8, 5))
+    plt.plot(rate_by_year["syear"], rate_by_year["NTU"], marker="o")
+    plt.xlabel("Survey Year")
+    plt.ylabel("Non-take-up Rate")
+    plt.title("Non-take-up of BAföG Over Time")
+    plt.ylim(0, 1)
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
+def _build_design_matrix(df: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame]:
+    """Build design matrix X and outcome NTU_i = 1{A_i = 0 | T_i = 1}.
+
+    • Sample: restrict to theoretically eligible students (T_i = 1).
+    • NTU_i = 1 if student did not receive BAföG (A_i = 0); 0 if received it.
+    • Continuous covariates are z-standardized; categorical ones one-hot encoded.
     """
 
-    # ────────────────────────────── sample ────────────────────────────────────
-    # Sample for our condition that T = 1 (theoretically eligible)
-    # We are modeling Pr(A = 0 | T = 1), i.e. the probability of *not* taking up BAföG
-    # among those who are eligible according to our calculations.
     df = df.loc[df["receives_bafoeg"] == 1].copy()
 
-    # ───────────────────────── dependent variable ─────────────────────────────
-    # Define dependent variable:
-    # This is our actual observed outcome from SOEP data.
-    # y = 1 if the student *did not* receive BAföG (i.e. non-take-up)
-    #     = 0 if they did receive it (i.e. take-up)
-    # This sets the left-hand side of our Probit model: Pr(A = 0 | T = 1)
-    y = (df["received_student_grant"] == 0).astype(int)
-    y.name = "non_takeup"
+    # ───────────────────── NTU indicator: 1 if A_i = 0 ────────────────────────
+    NTU = (df["received_student_grant"] == 0).astype(int)
+    NTU.name = "NTU"
 
     # ───────────────────────── continuous covariates ──────────────────────────
-    # Although 'num_siblings' is a discrete count variable, we treat it as continuous
-    # here for simplicity in the Probit model. This is common practice when the variable
-    # takes a reasonable range of values and no strong nonlinearity is expected.
     continuous_cols = ["age", "num_siblings"]
-    # StandardScaler standardizes variables to have mean 0 and standard deviation 1.
-    # This helps with model convergence and makes the scale of coefficients comparable.
     scaler = StandardScaler()
     continuous_std = pd.DataFrame(
         scaler.fit_transform(df[continuous_cols]),
@@ -57,52 +59,34 @@ def _build_design_matrix(df: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame]:
         index=df.index,
     )
 
-    # ───────────────────────────── binary covariate ───────────────────────────
-    binary = pd.DataFrame(
-        {"living_with_parent": df["lives_with_parent"].astype(int)}, index=df.index
-    )
+    # ───────────────────────────── binary covariates ──────────────────────────
+    binary = pd.DataFrame({
+        "living_with_parent": df["lives_with_parent"].astype(int),
+        "east_background": df["east_background"].astype(int),
+    }, index=df.index)
 
     # ─────────────────────────── categorical dummies ──────────────────────────
-    # For each categorical variable, we use one-hot encoding (get_dummies).
-    # We set drop_first=True to avoid the "dummy variable trap":
-    # If all dummy variables are included along with a constant term, they
-    # become linearly dependent (perfect multicollinearity), which breaks estimation.
-    # Dropping the first category avoids this by using it as the reference group.
     sex_dummies = pd.get_dummies(df["sex"].astype("category"), prefix="sex", drop_first=True)
     bula_dummies = pd.get_dummies(df["bula"].astype("category"), prefix="state", drop_first=True)
-
+    migback_dummies = pd.get_dummies(df["migback"].astype("category"), prefix="migback", drop_first=True)
 
     df["pgemplst"] = pd.Categorical(
         df["pgemplst"],
-        categories=[5, 1, 2, 3, 4],  # make 5 = Not employed the base
+        categories=[5, 1, 2, 3, 4],  # 5 = not employed (base)
         ordered=False
     )
-
     emp_dummies = pd.get_dummies(df["pgemplst"], prefix="empstat", drop_first=True)
 
-    # REMOVE FOR NOW, MADE NO SENSE IN THE OUTCOME
-    # hh_dummies = pd.get_dummies(df["hgtyp1hh"].astype("category"), prefix="hh", drop_first=True)
-
-    # ─────────────────────────────── combine & clean ──────────────────────────
-    # We now build the full design matrix X.
-    # Conceptually, X = [X_continuous | X_binary | X_dummies], where:
-    # - X_continuous holds standardised continuous covariates (z_age, z_num_siblings)
-    # - X_binary holds variables like 'living_with_parent' (0/1)
-    # - X_dummies holds one-hot encoded categories (sex, state, etc.)
-    # This mirrors the common structure in econometrics: Xβ + Dγ
-    X = pd.concat([continuous_std, binary, sex_dummies, bula_dummies, emp_dummies], axis=1)
+    # ───────────────────────────── combine all features ───────────────────────
+    X = pd.concat([continuous_std, binary, sex_dummies, emp_dummies, migback_dummies], axis=1)
     X = X.dropna()
-    y = y.loc[X.index]
+    NTU = NTU.loc[X.index]
 
-    # Add constant (intercept)
-    # Including a constant allows the model to estimate a baseline probability
-    # of non-take-up when all covariates are zero (or at their reference level).
-    # It also ensures the model can correctly fit the average outcome unless
-    # explicitly restricted. Without it, the model would be forced through the origin,
-    # which is almost never appropriate in Probit/logit models.
+    # Add intercept
     X = sm.add_constant(X).astype(float)
 
-    return y, X
+    return NTU, X
+
 
 def main() -> None:
     # --------------------------- load data -----------------------------------
@@ -115,31 +99,42 @@ def main() -> None:
     df = pd.read_parquet(parquet_file)
 
     # ------------------------ build model matrices ---------------------------
-    y, X = _build_design_matrix(df)
+    NTU, X = _build_design_matrix(df)
 
-    # ---------------------------- estimation ---------------------------------
-    model = sm.Probit(y, X)
-    res = model.fit(disp=False, cov_type = "HC0") # true for printing convergence messages
+    # ---------------------------- Probit estimation --------------------------
+    model = sm.Probit(NTU, X)
+    res = model.fit(disp=False, cov_type="HC2")
     print(res.summary())
 
-    # ----------------------- non‑take‑up prediction --------------------------
-    p_hat = res.predict(X)
+    # ---------------------------- prediction ---------------------------------
+    p_NTU = res.predict(X)  # predicted Pr(NTU_i = 1 | X_i)
 
-    # Use prevalence cut‑off to classify (better with imbalanced data)
-    # FIX: The cut off doesnt make sense to me, how does cutoff relate to the 
-    # probit model?
-    threshold = y.mean()
-    non_takeup_hat = (p_hat >= threshold).astype(int)
-    predicted_rate = non_takeup_hat.mean()
+    threshold = NTU.mean()  # ~ empirical prevalence
+    NTU_hat = (p_NTU >= threshold).astype(int)
+    predicted_rate = NTU_hat.mean()
 
-    print(f"\nSample non‑take‑up rate:          {y.mean():.2%}")
+    print(f"\nSample non‑take‑up rate:          {NTU.mean():.2%}")
     print(f"Predicted non‑take‑up rate (≥{threshold:.2f}): {predicted_rate:.2%}")
 
+    # ---------------------------- marginal effects ---------------------------
     mfx = res.get_margeff()
     print(mfx.summary())
 
+    # ------------------------ Weighted GLM Probit ----------------------------
+    print("\nWeighted GLM Probit Model:")
+    weights = df.loc[NTU.index, "phrf"]
+    glm_model = sm.GLM(
+        NTU,
+        X,
+        family=sm.families.Binomial(link=sm.families.links.probit()),
+        weights=weights
+    )
+    glm_res = glm_model.fit(cov_type="HC2")
+    print(glm_res.summary())
+
+    # ----------------------- Plot NTU over years -----------------------------
+    plot_non_takeup_by_year(df)
+
+
 if __name__ == "__main__":
     main()
-
-
-

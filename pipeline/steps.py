@@ -24,6 +24,31 @@ def filter_post_euro(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[df["syear"] >= 2002].copy()
 
 
+def add_east_german_background(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds a dummy column 'east_background' indicating whether the individual lives in
+    one of the new federal states (former East Germany).
+
+    The East German states are:
+        11 = Berlin
+        12 = Brandenburg
+        13 = Mecklenburg-Vorpommern
+        14 = Saxony
+        15 = Saxony-Anhalt
+        16 = Thuringia
+
+    Returns the input DataFrame with a new boolean column:
+        • east_background = 1 if bula in {11–16}, else 0
+    """
+    east_states = {11, 12, 13, 14, 15, 16}
+    out = df.copy()
+
+    if "bula" not in out.columns:
+        raise KeyError("Missing 'bula' column — make sure to run add_demographics first.")
+
+    out["east_background"] = out["bula"].isin(east_states).astype(int)
+    return out
+
 def add_demographics(
     df: pd.DataFrame,
     ppath_df: pd.DataFrame,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pandas.core.indexes.interval import le
+
 """High‑level pipeline that wires loaders, pure steps and services."""
 
 import pandas as pd
@@ -31,6 +33,7 @@ class BafoegPipeline:
                   self.loaders.region(),
                   self.loaders.hgen()
               )
+              .pipe(S.add_east_german_background) # still bula key error here
               .pipe(S.merge_education, self.loaders.pl())
               .pipe(S.merge_student_grant_dummy, self.loaders.pequiv())
               .pipe(S.merge_income, self.loaders.pgen(), INVALID_CODES)

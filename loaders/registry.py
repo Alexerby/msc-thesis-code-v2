@@ -27,6 +27,8 @@ _SPEC: Dict[str, Tuple[str, List[str]]] = {
             "gebmonat",
             "parid",
             "partner",
+            "migback",
+            "phrf"
         ],
     ),
     "pl": (
