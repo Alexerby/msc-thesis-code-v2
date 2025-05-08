@@ -37,7 +37,7 @@ class BafoegPipeline:
               .pipe(S.merge_education, self.loaders.pl()) # First merge of pl dataset
               .pipe(S.filter_students)
               .pipe(S.merge_student_grant_dummy, self.loaders.pequiv()) # First merge pequiv
-              .pipe(S.merge_income, self.loaders.pgen(), INVALID_CODES)
+              # .pipe(S.merge_income, self.loaders.pgen(), INVALID_CODES)
               .pipe(S.merge_parent_links, self.loaders.bioparen()) # First merge bioparen
               .pipe(
                   S.merge_parental_incomes,
@@ -60,8 +60,15 @@ class BafoegPipeline:
               .pipe(S.merge_employment_status, self.loaders.pgen())
               .pipe(S.flag_partner_status)
               .pipe(S.count_own_children, self.loaders.bioparen())
-              .pipe(S.apply_student_income_tax, self.tax)
-              .pipe(S.apply_student_income_deduction, self._student_allowance_table)
+              # .pipe(S.apply_student_income_tax, self.tax)
+              # .pipe(S.apply_student_income_deduction, self._student_allowance_table)
+              .pipe(
+                    S.student_income_pipeline,
+                    self.loaders.pgen(),
+                    INVALID_CODES,
+                    self.tax,
+                    self._student_allowance_table,
+                )
               .pipe(S.compute_bafög_monthly_award, self._needs_table, self._insurance_table)
               .pipe(S.flag_theoretical_eligibility)
         )

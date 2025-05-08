@@ -184,6 +184,38 @@ def apply_student_income_tax(df: pd.DataFrame, tax_service) -> pd.DataFrame:
 def filter_students(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[df["plg0012_h"] == 1].drop(columns=["plg0012_h"])
 
+
+
+
+
+
+def student_income_pipeline(
+    df: pd.DataFrame,
+    pgen_df: pd.DataFrame,
+    invalid_codes: Sequence[int],
+    tax_service,
+    allowance_table: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Compresses three steps into one:
+
+        1. merge_income
+        2. apply_student_income_tax
+        3. apply_student_income_deduction
+    """
+    return (
+        df
+        .pipe(merge_income, pgen_df, invalid_codes)
+        .pipe(apply_student_income_tax, tax_service)
+        .pipe(apply_student_income_deduction, allowance_table)
+    )
+
+
+
+
+
+
+
 # ---------------------------------------------------------------------------
 # Parental links & income composition
 # ---------------------------------------------------------------------------
