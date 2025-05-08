@@ -161,7 +161,7 @@ def merge_income(
     )
 
 
-def apply_student_income_tax(df: pd.DataFrame, tax_service) -> pd.DataFrame:
+def apply_student_income_tax(df: pd.DataFrame, tax_service, base_col="gross_annual_income") -> pd.DataFrame:
     """
     Apply income tax and contributions to student's gross income to compute
     net income relevant for BAföG.
@@ -173,7 +173,7 @@ def apply_student_income_tax(df: pd.DataFrame, tax_service) -> pd.DataFrame:
     df[["student_income_tax", "student_church_tax", "student_soli"]] = tax_cols
 
     df["net_annual_student_income"] = (
-        df["gross_annual_income"]
+        df[base_col]
         - df["student_income_tax"].fillna(0)
         - df["student_church_tax"].fillna(0)
         - df["student_soli"].fillna(0)
@@ -342,9 +342,24 @@ def apply_lump_sum_deduction_parents(df: pd.DataFrame, werbung_df: pd.DataFrame)
     return out.drop(columns="werbungskostenpauschale")
 
 
-def apply_social_insurance_allowance(df: pd.DataFrame, rate: float = 0.223) -> pd.DataFrame:
+def apply_social_insurance_allowance(
+    df: pd.DataFrame,
+    *,
+    input_var: str,
+    output_var: str,
+    rate: float = 0.223,
+) -> pd.DataFrame:
+    """
+    Generic flat-rate social-insurance deduction (§ 21 Abs 2).
+
+    Parameters
+    ----------
+    input_var   column that contains the **pre-deduction** annual income
+    output_var  name of the **post-deduction** column to create
+    rate        default 22.3 %
+    """
     out = df.copy()
-    out["parental_income_post_insurance_allowance"] = out["adjusted_parental_income"] * (1 - rate)
+    out[output_var] = out[input_var] * (1 - rate)
     return out
 
 
@@ -409,6 +424,22 @@ def apply_additional_allowance_parents(df: pd.DataFrame, allowance_table: pd.Dat
 
     return out.drop(columns=["valid_from", "syear_date", "rate_50_percent"])
 
+
+
+def apply_lump_sum_deduction_student(df: pd.DataFrame,
+                                     werbung_df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    # merge pauschale by survey year
+    tab = werbung_df.rename(columns={"Year": "syear"})
+    out = out.merge(tab, on="syear", how="left")
+
+    # deduct from *gross* annual income
+    out["gross_after_werbung"] = np.maximum(
+        out["gross_annual_income"] - out["werbungskostenpauschale"], 0
+    )
+
+    return out.drop(columns=["werbungskostenpauschale"])
 
 #FIX: We are still not applying § 21 which I also think is relevant
 def apply_student_income_deduction(
@@ -475,7 +506,7 @@ def apply_student_income_deduction(
     )
 
     # Apply the deduction
-    out["monthly_income_post_student_allowance"] = np.maximum(
+    out["student_excess_income"] = np.maximum(
         out["monthly_student_income"] - out["student_total_allowance"], 0
     )
 
@@ -743,7 +774,7 @@ def compute_bafög_monthly_award(
     out["monthly_award"] = np.maximum(
         out["total_need"]
         - out["monthly_parental_contribution_split"]
-        - out["monthly_income_post_student_allowance"],
+        - out["student_excess_income"],
         0,
     )
 
@@ -790,28 +821,28 @@ def add_receives_bafoeg_flag(df: pd.DataFrame) -> pd.DataFrame:
 #  Student mini-pipeline
 # ---------------------------------------------------------------------------
 
-
 def student_income_pipeline(
-    df: pd.DataFrame,
-    pgen_df: pd.DataFrame,
-    invalid_codes: Sequence[int],
-    tax_service,
-    allowance_table: pd.DataFrame,
-) -> pd.DataFrame:
-    """
-    Compresses three steps into one:
-
-        1. merge_income
-        2. apply_student_income_tax
-        3. apply_student_income_deduction
-    """
+    df, pgen_df, invalid_codes, tax_service, allowance_table, werbung_df
+):
     return (
         df
+        # 1  gross labour income
         .pipe(merge_income, pgen_df, invalid_codes)
-        .pipe(apply_student_income_tax, tax_service)
+
+        # 2  Werbungskosten-Pauschale (§ 9a EStG)
+        .pipe(apply_lump_sum_deduction_student, werbung_df)
+
+        # 3  flat 22.3 % social-insurance allowance (§ 21 II Nr. 1)
+        .pipe(apply_social_insurance_allowance,
+              input_var="gross_after_werbung",
+              output_var="income_post_si")
+
+        # 4  income-tax calculation on the SI-reduced base
+        .pipe(apply_student_income_tax, tax_service, base_col="income_post_si")
+
+        # 5  § 23 personal / spouse / child allowances
         .pipe(apply_student_income_deduction, allowance_table)
     )
-
 
 
 # ---------------------------------------------------------------------------
@@ -856,7 +887,9 @@ def parental_income_pipeline(
             require_both_parents=require_both_parents,
         )
         .pipe(apply_lump_sum_deduction_parents, werbung_df)
-        .pipe(apply_social_insurance_allowance)
+        .pipe(apply_social_insurance_allowance,
+              input_var="adjusted_parental_income",
+              output_var="parental_income_post_insurance_allowance")
         .pipe(find_siblings, bioparen_df)
         .pipe(merge_sibling_income, pgen_df, invalid_codes)
         .pipe(apply_parental_income_tax, tax_service)

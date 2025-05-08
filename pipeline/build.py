@@ -55,13 +55,14 @@ class BafoegPipeline:
                   self._allowance_table,
                   require_both_parents=False,
               )
-              .pipe(                                  # 6
-                  S.student_income_pipeline,
-                  self.loaders.pgen(),
-                  INVALID_CODES,
-                  self.tax,
-                  self._student_allowance_table,
-              )
+            .pipe(
+                S.student_income_pipeline,
+                self.loaders.pgen(),
+                INVALID_CODES,
+                self.tax,
+                self._student_allowance_table,
+                self._werbung_df
+            )
               .pipe(S.compute_bafög_monthly_award,
                     self._needs_table,
                     self._insurance_table)
