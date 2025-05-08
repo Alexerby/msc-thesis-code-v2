@@ -3,8 +3,28 @@ import json
 from typing import Dict, Literal
 from pathlib import Path
 import pandas as pd
+import re
 
+def _norm(col: str) -> str:
+    """Remove whitespace and make lowercase – for robust column matching."""
+    return re.sub(r"\s+", "", col).lower()
 
+def _auto_map(cols, patterns):
+    """
+    Build {old_name: new_name} where `patterns` is
+    {new_name: list_of_regexes_on_normalised_column}.
+    """
+    rename = {}
+    ncols = { _norm(c): c for c in cols }      # map normalised -> real
+    for new, regexes in patterns.items():
+        for rgx in regexes:
+            # find first column whose *normalised* name matches pattern
+            matches = [ real for norm, real in ncols.items()
+                        if re.fullmatch(rgx, norm) ]
+            if matches:
+                rename[matches[0]] = new
+                break          # stop after first match
+    return rename
 
 
 def get_config_path(filename: Path) -> Path:
@@ -43,8 +63,8 @@ def export_data(
         sheet_name (str): Optional sheet name for Excel exports
     """
 
-    if df is None:
-        raise ValueError("Dataframe is empty")
+    # if df is None: # Unreachable, comment out for now
+    #     raise ValueError("Dataframe is empty")
 
     config_path = get_config_path(Path("config.json"))
     config = load_config(config_path)

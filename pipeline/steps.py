@@ -14,6 +14,7 @@ to reorder in a pipeline.
 from typing import Sequence
 import numpy as np
 import pandas as pd
+from misc.utility_functions import _norm, _auto_map
 
 # ---------------------------------------------------------------------------
 # Basic filters / enrichers
@@ -118,11 +119,66 @@ def merge_income(
     pgen_df: pd.DataFrame,
     invalid_codes: Sequence[int],
 ) -> pd.DataFrame:
+    """
+    Merge gross income from employment into the main student DataFrame.
+
+    This function extracts each student's gross labor income from the pgen file
+    and merges both monthly and annual income values into the main DataFrame.
+
+    - Invalid codes (e.g., -1 to -8) are treated as missing.
+    - Missing income is assumed to be zero (i.e., the student had no earnings).
+    - Income is converted from monthly to annual.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The main student-level DataFrame containing at least 'pid' and 'syear'.
+    pgen_df : pd.DataFrame
+        The pgen table containing labor income ('pglabgro').
+    invalid_codes : Sequence[int]
+        A list or set of codes representing missing or invalid income data.
+
+    Returns
+    -------
+    pd.DataFrame
+        The input DataFrame with two new columns merged in:
+        - 'gross_monthly_income': Monthly earnings from pgen, with NaN → 0
+        - 'gross_annual_income' : gross_monthly_income × 12
+    """
     pg = pgen_df.copy()
+
+    # Treat invalid codes as missing
     pg["pglabgro"] = pg["pglabgro"].where(~pg["pglabgro"].isin(invalid_codes), np.nan)
-    pg.rename(columns={"pglabgro": "gross_monthly_income"}, inplace=True)
+
+    # Assume missing means zero income for BAföG calculation purposes
+    pg["gross_monthly_income"] = pg["pglabgro"].fillna(0)
     pg["gross_annual_income"] = pg["gross_monthly_income"] * 12
-    return df.merge(pg[["pid", "syear", "gross_annual_income"]], on=["pid", "syear"], how="left")
+
+    return df.merge(
+        pg[["pid", "syear", "gross_monthly_income", "gross_annual_income"]],
+        on=["pid", "syear"],
+        how="left"
+    )
+
+
+def apply_student_income_tax(df: pd.DataFrame, tax_service) -> pd.DataFrame:
+    """
+    Apply income tax and contributions to student's gross income to compute
+    net income relevant for BAföG.
+
+    Returns a new column:
+        'net_annual_student_income'
+    """
+    tax_cols = df.apply(tax_service.compute_for_row, axis=1, result_type="expand")
+    df[["student_income_tax", "student_church_tax", "student_soli"]] = tax_cols
+
+    df["net_annual_student_income"] = (
+        df["gross_annual_income"]
+        - df["student_income_tax"].fillna(0)
+        - df["student_church_tax"].fillna(0)
+        - df["student_soli"].fillna(0)
+    )
+    return df
 
 
 def filter_students(df: pd.DataFrame) -> pd.DataFrame:
@@ -131,6 +187,82 @@ def filter_students(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Parental links & income composition
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# § 21 – split parental contribution across co-supported children
+# ---------------------------------------------------------------------------
+
+def split_parental_contribution(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Implements § 21 BAföG:
+        If several children of the same parents receive training support in the
+        same calendar year, the parental income to be credited is divided equally
+        among them.
+
+    Requires columns
+        • fnr, mnr   – biological father / mother pid (from merge_parent_links)
+        • syear      – survey year
+        • monthly_parental_income_post_additional_allowance
+    """
+
+    out = df.copy()
+
+    # 1) how many of this parent pair's children are in *this* student frame & year
+    out["children_in_training"] = (
+        out.groupby(["fnr", "mnr", "syear"])["pid"].transform("count")
+    ).clip(lower=1)        # guard against division by zero
+
+    # 2) per-child parental share
+    out["monthly_parental_contribution_split"] = (
+        out["monthly_parental_income_post_additional_allowance"]
+        / out["children_in_training"]
+    )
+
+    return out
+
+
+def count_own_children(df: pd.DataFrame, bioparen_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add a column `num_own_children` indicating how many children each student (pid) has,
+    based on the bioparen table.
+
+    This uses the inverse logic of the bioparen mapping:
+    • bioparen normally maps child_pid → (fnr, mnr)
+    • here, we reverse it: parent_pid → [children]
+
+    Parameters
+    ----------
+    df           : DataFrame containing students (must include 'pid')
+    bioparen_df  : SOEP bioparen dataset with columns ['pid', 'fnr', 'mnr']
+
+    Returns
+    -------
+    DataFrame with one new column:
+        • num_own_children: number of known biological children per student
+    """
+    # Build a long-form mapping of parent_pid → child_pid
+    parent_child = (
+        pd.concat([
+            bioparen_df[["fnr", "pid"]].rename(columns={"fnr": "parent_pid"}),
+            bioparen_df[["mnr", "pid"]].rename(columns={"mnr": "parent_pid"}),
+        ])
+        .dropna(subset=["parent_pid"])
+        .astype({"parent_pid": int})
+    )
+
+    # Count how many times each parent appears (i.e. number of children)
+    counts = (
+        parent_child.groupby("parent_pid")
+                    .size()
+                    .rename("num_own_children")
+                    .reset_index()
+    )
+
+    # Merge back to student rows
+    out = df.merge(counts, how="left", left_on="pid", right_on="parent_pid")
+    out["num_own_children"] = out["num_own_children"].fillna(0).astype(int)
+    return out.drop(columns=["parent_pid"])
+
 
 def merge_parent_links(df: pd.DataFrame, bioparen_df: pd.DataFrame) -> pd.DataFrame:
     return df.merge(bioparen_df, on="pid", how="left")
@@ -165,7 +297,7 @@ def merge_parental_incomes(
     return out
 
 
-def apply_income_tax(df: pd.DataFrame, tax_service) -> pd.DataFrame:
+def apply_parental_income_tax(df: pd.DataFrame, tax_service) -> pd.DataFrame:
     tax_cols = df.apply(tax_service.compute_for_row, axis=1, result_type="expand")
     df[["parental_income_tax", "parental_church_tax", "parental_soli"]] = tax_cols
     df["parental_income_relevant_for_bafög"] = (
@@ -175,6 +307,7 @@ def apply_income_tax(df: pd.DataFrame, tax_service) -> pd.DataFrame:
     )
     df["monthly_parental_income_relevant_for_bafoeg"] = df["parental_income_relevant_for_bafög"] / 12
     return df
+
 
 def flag_parent_relationship(df: pd.DataFrame, ppath_df: pd.DataFrame) -> pd.DataFrame:
     p = ppath_df[["pid", "syear", "parid"]].copy()
@@ -268,6 +401,89 @@ def apply_additional_allowance_parents(df: pd.DataFrame, allowance_table: pd.Dat
 
     return out.drop(columns=["valid_from", "syear_date", "rate_50_percent"])
 
+
+#FIX: We are still not applying § 21 which I also think is relevant
+def apply_student_income_deduction(
+    df: pd.DataFrame,
+    allowance_table: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Apply § 23 (1) BAföG: Freibeträge (allowances) from student's own income.
+
+    Monthly income is reduced by:
+      - Base allowance for the student (§ 23 Abs. 1 Nr. 1),
+      - Allowance for a spouse or partner (§ 23 Abs. 1 Nr. 2),
+      - Allowance per child (§ 23 Abs. 1 Nr. 3).
+
+    Returns a new column:
+        'monthly_income_post_student_allowance'
+
+    Assumes:
+        - 'gross_annual_income' column exists,
+        - 'has_partner' and 'num_children' columns exist (or defaulted to 0).
+    """
+    # Prep statute table
+    tab = allowance_table.rename(columns={
+        "Valid from": "valid_from",
+        "§ 23 (1) 1": "allowance_self",
+        "§ 23 (1) 2": "allowance_spouse",
+        "§ 23 (1) 3": "allowance_child"
+    }).copy()
+
+    tab["valid_from"] = pd.to_datetime(tab["valid_from"])
+    for col in ["allowance_self", "allowance_spouse", "allowance_child"]:
+        tab[col] = pd.to_numeric(tab[col], errors="coerce")
+    tab = tab.sort_values("valid_from").ffill()
+
+    # Merge allowance table by survey year
+    out = df.copy()
+    out["syear_date"] = pd.to_datetime(out["syear"].astype(str) + "-01-01")
+    out = pd.merge_asof(
+        out.sort_values("syear_date"),
+        tab[["valid_from", "allowance_self", "allowance_spouse", "allowance_child"]],
+        left_on="syear_date",
+        right_on="valid_from",
+        direction="backward"
+    )
+
+    # Monthly income and default fallback values
+    out["monthly_student_income"] = out["net_annual_student_income"] / 12
+
+    if "has_partner" not in out:
+        out["has_partner"] = 0
+    else:
+        out["has_partner"] = out["has_partner"].fillna(0)
+
+    if "num_children" not in out:
+        out["num_children"] = 0
+    else:
+        out["num_children"] = out["num_children"].fillna(0)
+
+    # Total deduction
+    out["student_total_allowance"] = (
+        out["allowance_self"]
+        + out["has_partner"] * out["allowance_spouse"]
+        + out["num_children"] * out["allowance_child"]
+    )
+
+    # Apply the deduction
+    out["monthly_income_post_student_allowance"] = np.maximum(
+        out["monthly_student_income"] - out["student_total_allowance"], 0
+    )
+
+    return out.drop(columns=[
+        "valid_from", "syear_date",
+        "allowance_self", "allowance_spouse", "allowance_child"
+    ])
+
+
+
+
+
+
+
+
+
 # ---------------------------------------------------------------------------
 # Siblings
 # ---------------------------------------------------------------------------
@@ -349,6 +565,10 @@ def merge_sibling_income(
     return out
 
 # FIX: This is applying parental income. Fix.
+# also applies flat 2000, double check this if its maybe just a placeholder.
+# Probably is.
+# This value is currently not in use as the subtracted amount in the end is an 
+# amount before the sibling applicance is applied.
 def apply_sibling_allowance(df: pd.DataFrame, rate: float = 2000) -> pd.DataFrame:
     out = df.copy()
     out["monthly_parental_income_post_sibling_allowance"] = np.maximum(
@@ -412,55 +632,137 @@ def flag_living_with_parents(
 
 
 
-def compute_bafög_monthly_award(df: pd.DataFrame, need_table: pd.DataFrame) -> pd.DataFrame:
+def flag_partner_status(df: pd.DataFrame) -> pd.DataFrame:
     """
-    § 13 BAföG:
-        total_need  = base_need  +  housing_allowance
-        award       = max(total_need − monthly_parental_income_post_additional_allowance, 0)
-
-    housing_allowance:
-        59 €  if lives_with_parent
-        380 € otherwise
+    Add 'has_partner' = 1 if the person has a spouse/partner, 0 otherwise.
+    Based on the SOEP 'partner' variable from ppathl.
     """
-    # ---- prep statute table -------------------------------------------------
-    tab = need_table.rename(columns={
-        "Valid from": "valid_from",
-        "§ 13 (1) 2": "base_need",
-        "§ 13 (2) 1": "housing_with_parents",
-        "§ 13 (2) 2": "housing_away",
-    })
-    tab["valid_from"] = pd.to_datetime(tab["valid_from"])
-    tab = tab.sort_values("valid_from")
+    out = df.copy()
+    out["has_partner"] = (out["partner"] > 0).astype(int)
+    return out
 
+
+
+def compute_bafög_monthly_award(
+    df: pd.DataFrame,
+    need_table: pd.DataFrame,
+    insurance_table: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Compute monthly BAföG award.
+
+    total_need = base_need + housing_allowance + insurance_supplement
+    award      = max(total_need
+                     − parental_income_after_allowances
+                     − own_income_after_allowances, 0)
+    """
+
+    # ───────────── § 13: base need & housing ─────────────
+    need_patterns = {
+        "valid_from":        [r"validfrom"],
+        "base_need_parent":  [r"§?13\(1\)1"],
+        "base_need_away":    [r"§?13\(1\)2"],
+        "housing_with_parents": [r"§?13\(2\)1"],
+        "housing_away":         [r"§?13\(2\)2"],
+    }
+    need = (
+        need_table
+        .rename(columns=_auto_map(need_table.columns, need_patterns))
+        .assign(valid_from=lambda d: pd.to_datetime(d["valid_from"]))
+        .sort_values("valid_from")
+    )
+
+    # ────────── § 13a: health & LTC supplements ──────────
+    ins_patterns = {
+        "valid_from_ins": [r"validfrom"],
+        "kv_stat_mand":   [r"§?13a\(1\)1"],
+        "pv_stat_mand":   [r"§?13a\(1\)2"],
+    }
+    # strip all column-name whitespace first for reliability
+    insurance_table.columns = insurance_table.columns.str.strip()
+    ins = (
+        insurance_table
+        .rename(columns=_auto_map(insurance_table.columns, ins_patterns))
+        .assign(valid_from_ins=lambda d: pd.to_datetime(d["valid_from_ins"]))
+        .sort_values("valid_from_ins")
+    )
+
+    # ───────────────────── merge by survey year ─────────────────────
     out = df.copy()
     out["syear_date"] = pd.to_datetime(out["syear"].astype(str) + "-01-01")
+
     out = pd.merge_asof(
         out.sort_values("syear_date"),
-        tab[["valid_from", "base_need", "housing_with_parents", "housing_away"]],
+        need[
+            ["valid_from",
+             "base_need_parent", "base_need_away",
+             "housing_with_parents", "housing_away"]
+        ],
         left_on="syear_date",
         right_on="valid_from",
         direction="backward",
     )
 
-    # ---- housing -----------------------------------------------------------
-    out["housing_allowance"] = np.where(
-        out["lives_with_parent"],
-        out["housing_with_parents"],
-        out["housing_away"],
+    out = pd.merge_asof(
+        out.sort_values("syear_date"),
+        ins[["valid_from_ins", "kv_stat_mand", "pv_stat_mand"]],
+        left_on="syear_date",
+        right_on="valid_from_ins",
+        direction="backward",
+        allow_exact_matches=True,
     )
 
-    # ---- final need / award -------------------------------------------------
-    out["total_need"] = out["base_need"] + out["housing_allowance"]
+    # ───── choose base need & housing allowance ─────
+    out["base_need"] = np.where(
+        out["lives_with_parent"], out["base_need_parent"], out["base_need_away"]
+    )
+    out["housing_allowance"] = np.where(
+        out["lives_with_parent"], out["housing_with_parents"], out["housing_away"]
+    )
+
+    # ───── health & LTC supplement (§ 13a) ─────
+    out["insurance_supplement"] = (
+        out["kv_stat_mand"].fillna(0) + out["pv_stat_mand"].fillna(0)
+    )
+
+    # ─────────────── final need & award ───────────────
+    out["total_need"] = (
+        out["base_need"]
+        + out["housing_allowance"]
+        + out["insurance_supplement"]
+    )
+
     out["monthly_award"] = np.maximum(
-        out["total_need"] - out["monthly_parental_income_post_additional_allowance"],
+        out["total_need"]
+        - out["monthly_parental_contribution_split"]
+        - out["monthly_income_post_student_allowance"],
         0,
     )
 
-    return out.drop(columns=[
-        "valid_from", "syear_date",
-        "base_need", "housing_with_parents", "housing_away",
-    ])
+    # ─────────── clean-up (ignore missing cols) ───────────
+    return out.drop(
+        columns=[
+            "valid_from", "valid_from_ins", "syear_date",
+            "base_need_parent", "base_need_away",
+            "housing_with_parents", "housing_away",
+            # "kv_stat_mand", "pv_stat_mand", "insurance_supplement",
+        ],
+        errors="ignore",
+    )
 
+
+def flag_theoretical_eligibility(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add a dummy column `eligible_for_bafoeg`:
+        - 1 if the computed monthly_award > 0
+        - 0 otherwise
+
+    This reflects theoretical BAföG eligibility under current law,
+    irrespective of whether the student actually received any support.
+    """
+    out = df.copy()
+    out["eligible_for_bafoeg"] = (out["monthly_award"] > 0).astype(int)
+    return out
 
 def add_receives_bafoeg_flag(df: pd.DataFrame) -> pd.DataFrame:
     """

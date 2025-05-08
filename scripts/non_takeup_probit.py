@@ -12,9 +12,32 @@ from misc.utility_functions import get_config_path, load_config
 # Helpers
 ###############################################################################
 
+
+def plot_monthly_award_over_time(df: pd.DataFrame) -> None:
+    """Plot the average monthly award (among recipients) over survey years."""
+    # Filter for students who received BAföG
+    received = df[df["eligible_for_bafoeg"] == 1].copy()
+
+    # Compute mean award by survey year
+    award_by_year = (
+        received.groupby("syear")["monthly_award"]
+        .mean()
+        .reset_index()
+    )
+
+    # Plot
+    plt.figure(figsize=(8, 5))
+    plt.plot(award_by_year["syear"], award_by_year["monthly_award"], marker="o")
+    plt.xlabel("Survey Year")
+    plt.ylabel("Average Monthly Award (€)")
+    plt.title("Average BAföG Monthly Award Over Time")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
 def plot_non_takeup_by_year(df: pd.DataFrame) -> None:
     # Filter for theoretically eligible students
-    eligible = df[df["receives_bafoeg"] == 1].copy()
+    eligible = df[df["eligible_for_bafoeg"] == 1].copy()
     eligible["NTU"] = (eligible["received_student_grant"] == 0).astype(int)
 
     # Compute average NTU by year
@@ -44,14 +67,14 @@ def _build_design_matrix(df: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame]:
     • Continuous covariates are z-standardized; categorical ones one-hot encoded.
     """
 
-    df = df.loc[df["receives_bafoeg"] == 1].copy()
+    df = df.loc[df["eligible_for_bafoeg"] == 1].copy()
 
     # ───────────────────── NTU indicator: 1 if A_i = 0 ────────────────────────
     NTU = (df["received_student_grant"] == 0).astype(int)
     NTU.name = "NTU"
 
     # ───────────────────────── continuous covariates ──────────────────────────
-    continuous_cols = ["age", "num_siblings"]
+    continuous_cols = ["age", "num_siblings", "monthly_award"]
     scaler = StandardScaler()
     continuous_std = pd.DataFrame(
         scaler.fit_transform(df[continuous_cols]),
@@ -110,30 +133,42 @@ def main() -> None:
     p_NTU = res.predict(X)  # predicted Pr(NTU_i = 1 | X_i)
 
     threshold = NTU.mean()  # ~ empirical prevalence
+    # threshold = 0.5
     NTU_hat = (p_NTU >= threshold).astype(int)
     predicted_rate = NTU_hat.mean()
 
-    print(f"\nSample non‑take‑up rate:          {NTU.mean():.2%}")
-    print(f"Predicted non‑take‑up rate (≥{threshold:.2f}): {predicted_rate:.2%}")
+    print(f"\nSample non‑take‑up rate:          {NTU.mean():.2%} (proportion of students not taking up bafög even though eligible)")
+    print(f"Predicted non‑take‑up rate (≥{threshold:.2f}): {predicted_rate:.2%} (the model's predicted rate using a threshold of 83.63% to classify non-take-up)")
+    print(p_NTU)
+
+
+    # Compute McFadden's pseudo-R²
+    ll_full = res.llf
+    ll_null = res.llnull
+    r2_mcfadden = 1 - ll_full / ll_null
+
+    print(f"\nMcFadden pseudo-R²: {r2_mcfadden:.4f}")
 
     # ---------------------------- marginal effects ---------------------------
     mfx = res.get_margeff()
     print(mfx.summary())
 
-    # ------------------------ Weighted GLM Probit ----------------------------
-    print("\nWeighted GLM Probit Model:")
-    weights = df.loc[NTU.index, "phrf"]
-    glm_model = sm.GLM(
-        NTU,
-        X,
-        family=sm.families.Binomial(link=sm.families.links.probit()),
-        weights=weights
-    )
-    glm_res = glm_model.fit(cov_type="HC2")
-    print(glm_res.summary())
+    # # ------------------------ Weighted GLM Probit ----------------------------
+    # print("\nWeighted GLM Probit Model:")
+    # weights = df.loc[NTU.index, "phrf"]
+    # glm_model = sm.GLM(
+    #     NTU,
+    #     X,
+    #     family=sm.families.Binomial(link=sm.families.links.probit()),
+    #     weights=weights
+    # )
+    # glm_res = glm_model.fit()
+    # print(glm_res.summary())
 
     # ----------------------- Plot NTU over years -----------------------------
-    plot_non_takeup_by_year(df)
+    # plot_non_takeup_by_year(df)
+
+    plot_monthly_award_over_time(df)
 
 
 if __name__ == "__main__":

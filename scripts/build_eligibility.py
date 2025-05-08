@@ -8,8 +8,9 @@ def main(overwrite: bool = False):
     # Select relevant columns from the full table
     required_cols = [
         "pid", "syear", "monthly_award", "receives_bafoeg", "lives_with_parent",
-        "age", "sex", "bula", "num_siblings", "hgtyp1hh", "received_student_grant",
-        "pgemplst", "migback", "east_background", "phrf"
+        "age", "sex", "bula", "num_siblings", "hgtyp1hh",
+        "pgemplst", "migback", "east_background", "phrf", "eligible_for_bafoeg",
+        "received_student_grant"
     ]
 
     # Filter the full table to only valid rows (e.g., students)
