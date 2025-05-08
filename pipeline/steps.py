@@ -189,30 +189,6 @@ def filter_students(df: pd.DataFrame) -> pd.DataFrame:
 
 
 
-def student_income_pipeline(
-    df: pd.DataFrame,
-    pgen_df: pd.DataFrame,
-    invalid_codes: Sequence[int],
-    tax_service,
-    allowance_table: pd.DataFrame,
-) -> pd.DataFrame:
-    """
-    Compresses three steps into one:
-
-        1. merge_income
-        2. apply_student_income_tax
-        3. apply_student_income_deduction
-    """
-    return (
-        df
-        .pipe(merge_income, pgen_df, invalid_codes)
-        .pipe(apply_student_income_tax, tax_service)
-        .pipe(apply_student_income_deduction, allowance_table)
-    )
-
-
-
-
 
 
 
@@ -803,3 +779,126 @@ def add_receives_bafoeg_flag(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["receives_bafoeg"] = (out["plc0168_h"] > 0).astype(int)
     return out
+
+
+
+# ---------------------------------------------------------------------------
+# PIPE WRAPPERS FOR build.py
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+#  Student mini-pipeline
+# ---------------------------------------------------------------------------
+
+
+def student_income_pipeline(
+    df: pd.DataFrame,
+    pgen_df: pd.DataFrame,
+    invalid_codes: Sequence[int],
+    tax_service,
+    allowance_table: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Compresses three steps into one:
+
+        1. merge_income
+        2. apply_student_income_tax
+        3. apply_student_income_deduction
+    """
+    return (
+        df
+        .pipe(merge_income, pgen_df, invalid_codes)
+        .pipe(apply_student_income_tax, tax_service)
+        .pipe(apply_student_income_deduction, allowance_table)
+    )
+
+
+
+# ---------------------------------------------------------------------------
+#  Parental mini-pipeline
+# ---------------------------------------------------------------------------
+
+def parental_income_pipeline(
+    df: pd.DataFrame,
+    pgen_df: pd.DataFrame,
+    invalid_codes: list[int],
+    werbung_df: pd.DataFrame,
+    bioparen_df: pd.DataFrame,
+    tax_service,
+    ppath_df: pd.DataFrame,
+    allowance_table: pd.DataFrame,
+    require_both_parents: bool = False,
+) -> pd.DataFrame:
+    """
+    One-shot wrapper that replaces 10 individual pipes:
+
+        1.  merge_parental_incomes
+        2.  apply_lump_sum_deduction_parents
+        3.  apply_social_insurance_allowance
+        4.  find_siblings
+        5.  merge_sibling_income
+        6.  apply_parental_income_tax
+        7.  flag_parent_relationship
+        8.  apply_basic_allowance_parents
+        9.  apply_sibling_allowance
+       10.  apply_additional_allowance_parents
+       11.  split_parental_contribution   ( § 25 Abs. 3 )
+
+    The output is identical to the sequence above, but we do only one merge
+    on `pgen` and avoid ~10 intermediate DataFrame copies.
+    """
+    return (
+        df
+        .pipe(
+            merge_parental_incomes,
+            pgen_df,
+            invalid_codes,
+            require_both_parents=require_both_parents,
+        )
+        .pipe(apply_lump_sum_deduction_parents, werbung_df)
+        .pipe(apply_social_insurance_allowance)
+        .pipe(find_siblings, bioparen_df)
+        .pipe(merge_sibling_income, pgen_df, invalid_codes)
+        .pipe(apply_parental_income_tax, tax_service)
+        .pipe(flag_parent_relationship, ppath_df)
+        .pipe(apply_basic_allowance_parents, allowance_table)
+        .pipe(apply_sibling_allowance)
+        .pipe(apply_additional_allowance_parents, allowance_table)
+        .pipe(split_parental_contribution)          # § 25 Abs. 3
+    )
+
+
+
+# ---------------------------------------------------------------------------
+#  Demographics mini-pipeline
+# ---------------------------------------------------------------------------
+
+def demographics_pipeline(df, ppath_df, region_df, hgen_df, pl_df):
+    return (
+        df
+        .pipe(add_demographics, ppath_df, region_df, hgen_df)
+        .pipe(add_east_german_background)
+        .pipe(merge_education, pl_df)
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Student-status mini-pipeline
+# ---------------------------------------------------------------------------
+
+def student_status_pipeline(
+    df,
+    pequiv_df,
+    ppath_df,
+    pgen_df,
+    bioparen_df
+):
+    return (
+        df
+        .pipe(merge_student_grant_dummy, pequiv_df)
+        .pipe(flag_living_with_parents, ppath_df)
+        .pipe(add_receives_bafoeg_flag)
+        .pipe(merge_employment_status, pgen_df)
+        .pipe(flag_partner_status)
+        .pipe(count_own_children, bioparen_df)
+    )

@@ -111,14 +111,20 @@ def _build_design_matrix(df: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame]:
     return NTU, X
 
 
-def main() -> None:
+def main(parquet_file: Path | None = None) -> None:
     # --------------------------- load data -----------------------------------
-    config_path = get_config_path(Path("config.json"))
-    config = load_config(config_path)
-    parquet_file = (
-        Path(config["paths"]["results"]["dataframes"]).expanduser().resolve()
-        / "eligibility.parquet"
-    )
+    if parquet_file is None:
+        # fall back to the path defined in config.json
+        config_path = get_config_path(Path("config.json"))
+        config = load_config(config_path)
+        parquet_file = (
+            Path(config["paths"]["results"]["dataframes"])
+            .expanduser().resolve()
+            / "eligibility.parquet"
+        )
+    else:
+        parquet_file = parquet_file.expanduser().resolve()
+
     df = pd.read_parquet(parquet_file)
 
     # ------------------------ build model matrices ---------------------------
@@ -172,4 +178,19 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Estimate non-take-up of BAföG and produce plots."
+    )
+    parser.add_argument(
+        "-p", "--parquet-file",
+        type=Path,
+        metavar="FILE",
+        help="Path to an alternative Parquet file. "
+             "If omitted, the location from config.json is used."
+    )
+    args = parser.parse_args()
+
+    # pass the user-supplied path (or None) into main()
+    main(parquet_file=args.parquet_file)
