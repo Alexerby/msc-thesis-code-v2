@@ -35,16 +35,16 @@ class BafoegPipeline:
                   self.loaders.hgen(),
                   self.loaders.pl(),
               )
-              .pipe(S.filter_students)                # 3
               .pipe(S.merge_parent_links, self.loaders.bioparen())
-              .pipe(                                  # 4
+              .pipe(                                  # 3
                   S.student_status_pipeline,
                   self.loaders.pequiv(),
                   self.loaders.ppath(),
                   self.loaders.pgen(),
                   self.loaders.bioparen(),
+                  self.loaders.pl(),
               )
-              .pipe(                                  # 5
+              .pipe(                                  # 4
                   S.parental_income_pipeline,
                   self.loaders.pgen(),
                   INVALID_CODES,
@@ -55,7 +55,7 @@ class BafoegPipeline:
                   self._allowance_table,
                   require_both_parents=False,
               )
-            .pipe(
+              .pipe(                                  # 5
                 S.student_income_pipeline,
                 self.loaders.pgen(),
                 INVALID_CODES,

@@ -38,7 +38,7 @@ def plot_monthly_award_over_time(df: pd.DataFrame) -> None:
 def plot_non_takeup_by_year(df: pd.DataFrame) -> None:
     # Filter for theoretically eligible students
     eligible = df[df["eligible_for_bafoeg"] == 1].copy()
-    eligible["NTU"] = (eligible["received_student_grant"] == 0).astype(int)
+    eligible["NTU"] = (eligible["receives_bafoeg"] == 0).astype(int)
 
     # Compute average NTU by year
     rate_by_year = (
@@ -70,7 +70,7 @@ def _build_design_matrix(df: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame]:
     df = df.loc[df["eligible_for_bafoeg"] == 1].copy()
 
     # ───────────────────── NTU indicator: 1 if A_i = 0 ────────────────────────
-    NTU = (df["received_student_grant"] == 0).astype(int)
+    NTU = (df["receives_bafoeg"] == 0).astype(int)
     NTU.name = "NTU"
 
     # ───────────────────────── continuous covariates ──────────────────────────

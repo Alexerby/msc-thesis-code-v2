@@ -22,7 +22,7 @@ def main(parquet_file: Path | None = None) -> None:
     # Rename for clarity
     df = df.rename(columns={
         "eligible_for_bafoeg": "T",             # Theoretically eligible
-        "received_student_grant": "A",          # Actually received BAföG
+        "receives_bafoeg": "A",          # Actually received BAföG
     })
 
     # Ensure both are binary integers

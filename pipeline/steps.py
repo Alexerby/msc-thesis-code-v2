@@ -25,30 +25,7 @@ def filter_post_euro(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[df["syear"] >= 2002].copy()
 
 
-def add_east_german_background(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Adds a dummy column 'east_background' indicating whether the individual lives in
-    one of the new federal states (former East Germany).
 
-    The East German states are:
-        11 = Berlin
-        12 = Brandenburg
-        13 = Mecklenburg-Vorpommern
-        14 = Saxony
-        15 = Saxony-Anhalt
-        16 = Thuringia
-
-    Returns the input DataFrame with a new boolean column:
-        • east_background = 1 if bula in {11–16}, else 0
-    """
-    east_states = {11, 12, 13, 14, 15, 16}
-    out = df.copy()
-
-    if "bula" not in out.columns:
-        raise KeyError("Missing 'bula' column — make sure to run add_demographics first.")
-
-    out["east_background"] = out["bula"].isin(east_states).astype(int)
-    return out
 
 def add_demographics(
     df: pd.DataFrame,
@@ -56,10 +33,18 @@ def add_demographics(
     region_df: pd.DataFrame,
     hgen_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Join age, Bundesland, and household type."""
+    """
+    Join age, Bundesland, household type, and East German flag.
+
+    Adds:
+      - age (from gebjahr/gebmonat)
+      - bula (state), from region table
+      - hgtyp1hh (household type), from hgen table
+      - east_background = 1 if state in former East Germany (bula ∈ 11–16)
+    """
     out = df.copy()
 
-    # Age ---------------------------------------------------------
+    # Age
     p = ppath_df[["pid", "hid", "syear", "gebjahr", "gebmonat"]].copy()
     p["age"] = p["syear"] - p["gebjahr"] - (p["gebmonat"] > 6).astype(int)
     out = (
@@ -67,10 +52,14 @@ def add_demographics(
            .merge(p[["pid", "syear", "age"]], on=["pid", "syear"], how="left")
     )
 
-    # Bundesland --------------------------------------------------
+    # Bundesland
     out = out.merge(region_df[["hid", "syear", "bula"]], on=["hid", "syear"], how="left")
 
-    # Household type ---------------------------------------------
+    # East German flag
+    east_states = {11, 12, 13, 14, 15, 16}
+    out["east_background"] = out["bula"].isin(east_states).astype(int)
+
+    # Household type
     out = out.merge(hgen_df[["hid", "syear", "hgtyp1hh"]], on=["hid", "syear"], how="left")
 
     return out
@@ -110,7 +99,18 @@ def merge_student_grant_dummy(df: pd.DataFrame, pkal_df: pd.DataFrame) -> pd.Dat
         how="left",
     )
 
-def merge_education(df: pd.DataFrame, pl_df: pd.DataFrame) -> pd.DataFrame:
+
+def merge_student_status_and_support(df: pd.DataFrame, pl_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Merge student status and support-related fields from the PL file:
+
+    Merged columns:
+        - 'plg0012_h': Currently in education (yes/no)
+        - 'plh0258_h': Religion affiliation
+        - 'plc0168_h': BAföG/Grant gross monthly amount
+
+    Joins on ['pid', 'syear'].
+    """
     return df.merge(pl_df, on=["pid", "syear"], how="left")
 
 
@@ -183,13 +183,6 @@ def apply_student_income_tax(df: pd.DataFrame, tax_service, base_col="gross_annu
 
 def filter_students(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[df["plg0012_h"] == 1].drop(columns=["plg0012_h"])
-
-
-
-
-
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +411,7 @@ def apply_additional_allowance_parents(df: pd.DataFrame, allowance_table: pd.Dat
     )
 
     out["monthly_parental_income_post_additional_allowance"] = np.maximum(
-        out["monthly_parental_income_post_basic_allowance"] * (1 - out["rate_50_percent"]),
+        out["monthly_parental_income_post_sibling_allowance"] * (1 - out["rate_50_percent"]),
         0,
     )
 
@@ -517,12 +510,6 @@ def apply_student_income_deduction(
 
 
 
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # Siblings
 # ---------------------------------------------------------------------------
@@ -603,17 +590,44 @@ def merge_sibling_income(
 
     return out
 
-# FIX: This is applying parental income. Fix.
-# also applies flat 2000, double check this if its maybe just a placeholder.
-# Probably is.
-# This value is currently not in use as the subtracted amount in the end is an 
-# amount before the sibling applicance is applied.
-def apply_sibling_allowance(df: pd.DataFrame, rate: float = 2000) -> pd.DataFrame:
+
+def apply_sibling_allowance(df: pd.DataFrame, allowance_table: pd.DataFrame) -> pd.DataFrame:
+    """
+    Apply the § 25 (3) 2 BAföG sibling allowance.
+
+    For each sibling (not in training), a fixed deduction (per survey year) is
+    subtracted from the monthly parental income. The allowance is defined yearly 
+    in the § 25 policy table.
+
+    Requires:
+        • df must include 'syear', 'num_siblings', 
+          and 'monthly_parental_income_post_basic_allowance'
+
+    Returns:
+        • DataFrame with new column:
+            'monthly_parental_income_post_sibling_allowance'
+    """
     out = df.copy()
+
+    # Clean policy table: keep year and §25 (3)2
+    table = allowance_table.copy()
+    table = table.rename(columns={"§ 25 (3) 2": "sibling_allowance_yearly"})
+    table["syear"] = pd.to_datetime(table["Valid from"]).dt.year
+    table = table[["syear", "sibling_allowance_yearly"]]
+
+    # Merge in the policy value for each row's year
+    out = out.merge(table, on="syear", how="left")
+
+    # Fill missing allowance values with 0
+    out["sibling_allowance_yearly"] = out["sibling_allowance_yearly"].fillna(0)
+
+    # Apply the deduction (convert yearly → monthly)
     out["monthly_parental_income_post_sibling_allowance"] = np.maximum(
-        out["monthly_parental_income_post_basic_allowance"] - rate * out["num_siblings"],
+        out["monthly_parental_income_post_basic_allowance"]
+        - (out["sibling_allowance_yearly"] / 12) * out["num_siblings"],
         0
     )
+
     return out
 
 
@@ -818,12 +832,83 @@ def add_receives_bafoeg_flag(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+#  Demographics mini-pipeline
+# ---------------------------------------------------------------------------
+
+def demographics_pipeline(df, ppath_df, region_df, hgen_df, pl_df):
+    """
+    Combines background enrichments to build the student profile:
+
+    1. Demographics (sex, age, household, region, east/west)
+    2. Student status & support (education, religion, BAföG grant)
+
+    Returns
+    -------
+    Enriched student-level DataFrame.
+    """
+    return (
+        df
+        .pipe(add_demographics, ppath_df, region_df, hgen_df)
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Student-status mini-pipeline
+# ---------------------------------------------------------------------------
+
+def student_status_pipeline(
+    df,
+    pequiv_df,
+    ppath_df,
+    pgen_df,
+    bioparen_df,
+    pl_df
+):
+    """
+    Adds flags and status indicators for BAföG eligibility:
+
+        1.  merge_student_grant_dummy  → received_student_grant
+        2.  merge_student_status_and_support → BAföG, religion, school status
+        3.  flag_living_with_parents   → affects housing allowance
+        4.  add_receives_bafoeg_flag   → consistency check
+        5.  merge_employment_status    → pgemplst
+        6.  flag_partner_status        → has_partner
+        7.  count_own_children         → num_children
+        8.  filter_students             → (filter)
+
+    Required for both the benefit formula and the take-up model.
+    """
+    return (
+        df
+        # .pipe(merge_student_grant_dummy, pequiv_df)
+        .pipe(merge_student_status_and_support, pl_df)
+        .pipe(flag_living_with_parents, ppath_df)
+        .pipe(add_receives_bafoeg_flag)
+        .pipe(merge_employment_status, pgen_df)
+        .pipe(flag_partner_status)
+        .pipe(count_own_children, bioparen_df)
+        .pipe(filter_students)
+    )
+
+
+# ---------------------------------------------------------------------------
 #  Student mini-pipeline
 # ---------------------------------------------------------------------------
 
 def student_income_pipeline(
     df, pgen_df, invalid_codes, tax_service, allowance_table, werbung_df
 ):
+    """
+    One-shot wrapper that replaces 5 individual pipes related to student's own income:
+
+        1.  merge_income
+        2.  apply_lump_sum_deduction_student      (§ 9a EStG)
+        3.  apply_social_insurance_allowance      (§ 21 Abs. 2 Nr. 1 BAföG)
+        4.  apply_student_income_tax              (income tax computation)
+        5.  apply_student_income_deduction        (§ 23 Abs. 1 BAföG)
+
+    Computes net BAföG-relevant student income after all statutory deductions.
+    """
     return (
         df
         # 1  gross labour income
@@ -895,43 +980,7 @@ def parental_income_pipeline(
         .pipe(apply_parental_income_tax, tax_service)
         .pipe(flag_parent_relationship, ppath_df)
         .pipe(apply_basic_allowance_parents, allowance_table)
-        .pipe(apply_sibling_allowance)
+        .pipe(apply_sibling_allowance, allowance_table)
         .pipe(apply_additional_allowance_parents, allowance_table)
         .pipe(split_parental_contribution)          # § 25 Abs. 3
-    )
-
-
-
-# ---------------------------------------------------------------------------
-#  Demographics mini-pipeline
-# ---------------------------------------------------------------------------
-
-def demographics_pipeline(df, ppath_df, region_df, hgen_df, pl_df):
-    return (
-        df
-        .pipe(add_demographics, ppath_df, region_df, hgen_df)
-        .pipe(add_east_german_background)
-        .pipe(merge_education, pl_df)
-    )
-
-
-# ---------------------------------------------------------------------------
-#  Student-status mini-pipeline
-# ---------------------------------------------------------------------------
-
-def student_status_pipeline(
-    df,
-    pequiv_df,
-    ppath_df,
-    pgen_df,
-    bioparen_df
-):
-    return (
-        df
-        .pipe(merge_student_grant_dummy, pequiv_df)
-        .pipe(flag_living_with_parents, ppath_df)
-        .pipe(add_receives_bafoeg_flag)
-        .pipe(merge_employment_status, pgen_df)
-        .pipe(flag_partner_status)
-        .pipe(count_own_children, bioparen_df)
     )
