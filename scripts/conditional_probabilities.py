@@ -1,11 +1,8 @@
 from pathlib import Path
 import pandas as pd
-
 from misc.utility_functions import get_config_path, load_config
 
-
 def main(parquet_file: Path | None = None) -> None:
-    # ---------------------- Load data ----------------------
     if parquet_file is None:
         config_path = get_config_path(Path("config.json"))
         config = load_config(config_path)
@@ -19,56 +16,40 @@ def main(parquet_file: Path | None = None) -> None:
 
     df = pd.read_parquet(parquet_file)
 
-    # Rename for clarity
+    # Rename and filter
     df = df.rename(columns={
-        "eligible_for_bafoeg": "T",             # Theoretically eligible
-        "receives_bafoeg": "A",          # Actually received BAföG
+        "eligible_for_bafoeg": "T",
+        "receives_bafoeg": "A",
     })
-
-    # Ensure both are binary integers
     df = df[df["T"].notna() & df["A"].notna()].copy()
     df["T"] = df["T"].astype(int)
     df["A"] = df["A"].astype(int)
 
-    # ---------------------- Raw Probabilities ----------------------
-    # Pr(A = 1 | T = 1)
-    takeup_rate = df.loc[df["T"] == 1, "A"].mean()
+    print("Conditional probabilities per year:")
+    results = []
 
-    # Pr(A = 0 | T = 1)
-    non_takeup_rate = 1 - takeup_rate
+    for year, group in df.groupby("syear"):
+        p_takeup = group.loc[group["T"] == 1, "A"].mean()
+        p_non_takeup = 1 - p_takeup
+        p_true_positive = group.loc[group["A"] == 1, "T"].mean()
+        p_false_positive = group.loc[group["T"] == 0, "A"].mean()
+        p_false_negative = 1 - p_true_positive
 
-    # Pr(T = 1 | A = 1)
-    share_eligible_among_recipients = df.loc[df["A"] == 1, "T"].mean()
+        results.append({
+            "syear": year,
+            "Pr(A=1|T=1)": round(p_takeup * 100, 2),
+            "Pr(A=0|T=1)": round(p_non_takeup * 100, 2),
+            "Pr(T=1|A=1)": round(p_true_positive * 100, 2),
+            "Pr(T=0|A=1)": round(p_false_negative * 100, 2),
+            "Pr(A=1|T=0)": round(p_false_positive * 100, 2),
+        })
 
-    # Pr(T = 0 | A = 1)
-    share_ineligible_among_recipients = 1 - share_eligible_among_recipients
-
-
-    false_positive_rate = df.loc[df["T"] == 0, "A"].mean()
-
-    print(f"\nEmpirical Conditional Probabilities:")
-    print(f"  Pr(A = 1 | T = 1) = {takeup_rate:.2%}")
-    print(f"  Pr(A = 0 | T = 1) = {non_takeup_rate:.2%}")
-    print(f"  Pr(T = 1 | A = 1) = {share_eligible_among_recipients:.2%}")
-    print(f"  Pr(T = 0 | A = 1) = {share_ineligible_among_recipients:.2%}")
-    print(f"  Pr(A = 1 | T = 0) = {false_positive_rate:.2%}")
-
-    # Optional: output total counts
-    print("\nCounts:")
-    print(pd.crosstab(df["T"], df["A"], rownames=["Eligible (T)"], colnames=["Receives (A)"]))
-
+    result_df = pd.DataFrame(results).set_index("syear")
+    print(result_df)
 
 if __name__ == "__main__":
     import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Compute raw conditional probabilities between theoretical eligibility and actual BAföG receipt."
-    )
-    parser.add_argument(
-        "-p", "--parquet-file",
-        type=Path,
-        metavar="FILE",
-        help="Path to Parquet file. If omitted, use config.json default."
-    )
+    parser = argparse.ArgumentParser(description="Per-year conditional probabilities.")
+    parser.add_argument("-p", "--parquet-file", type=Path, metavar="FILE")
     args = parser.parse_args()
     main(parquet_file=args.parquet_file)

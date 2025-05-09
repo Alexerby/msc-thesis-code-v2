@@ -25,8 +25,6 @@ def filter_post_euro(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[df["syear"] >= 2002].copy()
 
 
-
-
 def add_demographics(
     df: pd.DataFrame,
     ppath_df: pd.DataFrame,
@@ -166,18 +164,22 @@ def apply_student_income_tax(df: pd.DataFrame, tax_service, base_col="gross_annu
     Apply income tax and contributions to student's gross income to compute
     net income relevant for BAföG.
 
+    Ensures that net income is never negative.
+
     Returns a new column:
         'net_annual_student_income'
     """
     tax_cols = df.apply(tax_service.compute_for_row, axis=1, result_type="expand")
     df[["student_income_tax", "student_church_tax", "student_soli"]] = tax_cols
 
-    df["net_annual_student_income"] = (
+    net_income = (
         df[base_col]
         - df["student_income_tax"].fillna(0)
         - df["student_church_tax"].fillna(0)
         - df["student_soli"].fillna(0)
     )
+
+    df["net_annual_student_income"] = np.maximum(net_income, 0)
     return df
 
 

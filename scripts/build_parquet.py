@@ -1,4 +1,4 @@
-from bafoeg_calculator import BafoegCalculator
+from scripts.bafoeg_calculator import BafoegCalculator
 from misc.utility_functions import export_parquet
 
 def main(overwrite: bool = False):
